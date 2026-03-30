@@ -43,19 +43,22 @@
                     <p class="text-[10px] text-blue-200 font-medium">Sistem Digital Kehadiran Murid</p>
                 </div>
             </div>
-            <div class="flex items-center gap-2">
-                <div class="flex items-center gap-1.5 bg-white/15 backdrop-blur rounded-lg px-2.5 py-1.5 border border-white/20">
-                    <i class="fa-solid fa-calendar-day text-xs text-blue-200"></i>
-                    <input type="date" id="date-picker" class="bg-transparent text-sm font-semibold text-white outline-none cursor-pointer [color-scheme:dark]">
-                </div>
-                <button onclick="refreshDashboard()" class="w-8 h-8 rounded-lg bg-white/15 hover:bg-white/25 border border-white/20 flex items-center justify-center transition" title="Refresh">
-                    <i class="fa-solid fa-arrows-rotate text-xs text-white"></i>
-                </button>
-            </div>
+            <button onclick="refreshDashboard()" class="w-8 h-8 rounded-lg bg-white/15 hover:bg-white/25 border border-white/20 flex items-center justify-center transition" title="Refresh">
+                <i class="fa-solid fa-arrows-rotate text-xs text-white"></i>
+            </button>
         </div>
     </header>
 
     <main class="max-w-5xl mx-auto px-3 py-4 space-y-3">
+
+        <!-- Date Picker -->
+        <div class="bg-white rounded-xl shadow-sm px-4 py-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+                <i class="fa-solid fa-calendar-day text-sm text-blue-500"></i>
+                <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Tarikh</span>
+            </div>
+            <input type="date" id="date-picker" class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm font-semibold text-gray-800 focus:ring-2 focus:ring-blue-400 focus:border-blue-500 outline-none cursor-pointer bg-white">
+        </div>
 
         <!-- SECTION 1: Attendance -->
         <section class="bg-white rounded-xl shadow-sm overflow-hidden">
