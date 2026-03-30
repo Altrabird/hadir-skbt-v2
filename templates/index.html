@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hadir@SKBT — Sistem Kehadiran Murid</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="icon" href="/static/img/logo.png" type="image/png">
+    <link rel="stylesheet" href="/static/css/custom.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 50:'#eff6ff',100:'#dbeafe',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',800:'#1e40af' },
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-100 text-gray-800 min-h-screen">
+
+    <!-- Toast -->
+    <div id="toast-container" class="fixed top-3 right-3 z-50 flex flex-col gap-2"></div>
+
+    <!-- Loading -->
+    <div id="loading-overlay" class="hidden fixed inset-0 bg-black/30 backdrop-blur-sm z-40 flex items-center justify-center">
+        <div class="bg-white rounded-2xl p-6 shadow-2xl flex flex-col items-center gap-3">
+            <div class="w-9 h-9 border-[3px] border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+            <span class="text-sm text-gray-600 font-medium">Memuatkan...</span>
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-700 sticky top-0 z-30 shadow-lg">
+        <div class="max-w-5xl mx-auto px-3 py-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+                <img src="/static/img/logo.png" alt="Logo SKBT" class="w-9 h-9 rounded-lg shadow bg-white/10 p-0.5 object-contain">
+                <div>
+                    <h1 class="text-base font-bold text-white leading-tight tracking-tight">Hadir@SKBT</h1>
+                    <p class="text-[10px] text-blue-200 font-medium">Sistem Digital Kehadiran Murid</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-2">
+                <div class="flex items-center gap-1.5 bg-white/15 backdrop-blur rounded-lg px-2.5 py-1.5 border border-white/20">
+                    <i class="fa-solid fa-calendar-day text-xs text-blue-200"></i>
+                    <input type="date" id="date-picker" class="bg-transparent text-sm font-semibold text-white outline-none cursor-pointer [color-scheme:dark]">
+                </div>
+                <button onclick="refreshDashboard()" class="w-8 h-8 rounded-lg bg-white/15 hover:bg-white/25 border border-white/20 flex items-center justify-center transition" title="Refresh">
+                    <i class="fa-solid fa-arrows-rotate text-xs text-white"></i>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-5xl mx-auto px-3 py-4 space-y-3">
+
+        <!-- SECTION 1: Attendance -->
+        <section class="bg-white rounded-xl shadow-sm overflow-hidden">
+            <button onclick="toggleSection('attendance-body')" class="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition">
+                <div class="flex items-center gap-2">
+                    <div class="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center shadow-sm">
+                        <i class="fa-solid fa-clipboard-check text-white text-xs"></i>
+                    </div>
+                    <span class="font-bold text-sm text-gray-800">Tandakan Kehadiran</span>
+                </div>
+                <i class="fa-solid fa-chevron-down text-[10px] text-gray-400 section-chevron transition-transform"></i>
+            </button>
+
+            <div id="attendance-body" class="px-4 pb-4 space-y-3">
+                <div class="flex flex-col sm:flex-row gap-2">
+                    <div class="flex-1">
+                        <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Kelas</label>
+                        <select id="class-select" onchange="loadStudents()" class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm font-medium focus:ring-2 focus:ring-blue-400 focus:border-blue-500 outline-none transition bg-white">
+                            <option value="">— Pilih kelas —</option>
+                        </select>
+                    </div>
+                    <div class="flex items-end gap-1.5">
+                        <button onclick="setAllStatus(true)" class="px-2.5 py-2 text-[11px] font-bold rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 transition shadow-sm">
+                            <i class="fa-solid fa-check-double mr-1"></i>Semua Hadir
+                        </button>
+                        <button onclick="setAllStatus(false)" class="px-2.5 py-2 text-[11px] font-bold rounded-lg bg-red-500 text-white hover:bg-red-600 transition shadow-sm">
+                            <i class="fa-solid fa-xmark mr-1"></i>Semua Tidak Hadir
+                        </button>
+                    </div>
+                </div>
+
+                <div id="existing-notice" class="hidden items-center gap-2 px-3 py-2 bg-amber-50 border border-amber-300 rounded-lg text-xs text-amber-700 font-medium">
+                    <i class="fa-solid fa-circle-info text-amber-500"></i>
+                    <span>Data sedia ada dimuatkan. Penghantaran akan menggantikan rekod sebelumnya.</span>
+                </div>
+
+                <div id="student-list" class="space-y-0 max-h-[380px] overflow-y-auto">
+                    <p class="text-sm text-gray-400 py-6 text-center"><i class="fa-solid fa-users text-gray-300 mr-1"></i> Sila pilih kelas untuk memaparkan senarai murid.</p>
+                </div>
+
+                <button id="submit-btn" onclick="submitAttendance()" disabled
+                    class="w-full py-2.5 rounded-lg font-bold text-sm text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition shadow-md active:scale-[0.98]">
+                    <i class="fa-solid fa-paper-plane mr-1.5"></i>Hantar Kehadiran
+                </button>
+            </div>
+        </section>
+
+        <!-- SECTION 2: Dashboard -->
+        <section class="space-y-3">
+            <div class="flex items-center gap-2">
+                <div class="w-7 h-7 bg-indigo-600 rounded-lg flex items-center justify-center shadow-sm">
+                    <i class="fa-solid fa-chart-column text-white text-xs"></i>
+                </div>
+                <h2 class="text-base font-bold text-gray-900">Dashboard Kehadiran</h2>
+            </div>
+
+            <div id="dashboard-empty" class="hidden bg-white rounded-xl shadow-sm p-8 text-center">
+                <i class="fa-solid fa-inbox text-4xl text-gray-200 mb-2"></i>
+                <p class="text-gray-400 font-medium text-sm">Tiada rekod kehadiran untuk tarikh ini.</p>
+                <p class="text-gray-300 text-xs mt-0.5">Sila tandakan kehadiran di bahagian atas.</p>
+            </div>
+
+            <div id="dashboard-content" class="hidden space-y-3">
+
+                <!-- Top Metrics -->
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                    <div class="metric-card bg-gradient-to-br from-emerald-500 to-emerald-600 text-white">
+                        <div class="flex items-center gap-1.5 mb-0.5">
+                            <i class="fa-solid fa-user-check text-emerald-200 text-xs"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-100">Hadir</span>
+                        </div>
+                        <p id="m-present" class="text-2xl font-black">0</p>
+                        <p id="m-present-sub" class="text-[10px] text-emerald-200"></p>
+                    </div>
+                    <div class="metric-card bg-gradient-to-br from-red-500 to-red-600 text-white">
+                        <div class="flex items-center gap-1.5 mb-0.5">
+                            <i class="fa-solid fa-user-xmark text-red-200 text-xs"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-red-100">Tidak Hadir</span>
+                        </div>
+                        <p id="m-absent" class="text-2xl font-black">0</p>
+                        <p id="m-absent-sub" class="text-[10px] text-red-200"></p>
+                    </div>
+                    <div class="metric-card bg-gradient-to-br from-blue-500 to-blue-600 text-white">
+                        <div class="flex items-center gap-1.5 mb-0.5">
+                            <i class="fa-solid fa-chalkboard text-blue-200 text-xs"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-blue-100">Kelas Update</span>
+                        </div>
+                        <p id="m-classes" class="text-2xl font-black">0</p>
+                        <p id="m-classes-sub" class="text-[10px] text-blue-200"></p>
+                    </div>
+                    <div class="metric-card bg-gradient-to-br from-amber-500 to-orange-500 text-white">
+                        <div class="flex items-center gap-1.5 mb-0.5">
+                            <i class="fa-solid fa-chart-pie text-amber-200 text-xs"></i>
+                            <span class="text-[10px] font-bold uppercase tracking-wider text-amber-100">Kadar Kehadiran</span>
+                        </div>
+                        <p id="m-rate" class="text-2xl font-black">0%</p>
+                    </div>
+                </div>
+
+                <!-- Session Metrics -->
+                <div class="grid grid-cols-2 gap-2">
+                    <!-- Pagi -->
+                    <div class="bg-white rounded-xl shadow-sm p-3">
+                        <div class="flex items-center gap-1.5 mb-2">
+                            <div class="w-6 h-6 bg-amber-500 rounded-md flex items-center justify-center">
+                                <i class="fa-solid fa-sun text-white text-[10px]"></i>
+                            </div>
+                            <h3 class="font-bold text-xs text-gray-800">Sesi Pagi</h3>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1 text-center">
+                            <div class="bg-emerald-50 rounded-lg py-1.5">
+                                <p id="pagi-present" class="text-lg font-black text-emerald-600">0</p>
+                                <p class="text-[9px] font-semibold text-emerald-500">Hadir</p>
+                            </div>
+                            <div class="bg-red-50 rounded-lg py-1.5">
+                                <p id="pagi-absent" class="text-lg font-black text-red-600">0</p>
+                                <p class="text-[9px] font-semibold text-red-500">Tidak Hadir</p>
+                            </div>
+                            <div class="bg-blue-50 rounded-lg py-1.5">
+                                <p id="pagi-pct" class="text-lg font-black text-blue-600">0%</p>
+                                <p class="text-[9px] font-semibold text-blue-500">Kehadiran</p>
+                            </div>
+                        </div>
+                    </div>
+                    <!-- Petang -->
+                    <div class="bg-white rounded-xl shadow-sm p-3">
+                        <div class="flex items-center gap-1.5 mb-2">
+                            <div class="w-6 h-6 bg-indigo-500 rounded-md flex items-center justify-center">
+                                <i class="fa-solid fa-moon text-white text-[10px]"></i>
+                            </div>
+                            <h3 class="font-bold text-xs text-gray-800">Sesi Petang</h3>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1 text-center">
+                            <div class="bg-emerald-50 rounded-lg py-1.5">
+                                <p id="petang-present" class="text-lg font-black text-emerald-600">0</p>
+                                <p class="text-[9px] font-semibold text-emerald-500">Hadir</p>
+                            </div>
+                            <div class="bg-red-50 rounded-lg py-1.5">
+                                <p id="petang-absent" class="text-lg font-black text-red-600">0</p>
+                                <p class="text-[9px] font-semibold text-red-500">Tidak Hadir</p>
+                            </div>
+                            <div class="bg-blue-50 rounded-lg py-1.5">
+                                <p id="petang-pct" class="text-lg font-black text-blue-600">0%</p>
+                                <p class="text-[9px] font-semibold text-blue-500">Kehadiran</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RMT -->
+                <div class="bg-white rounded-xl shadow-sm p-3">
+                    <div class="flex items-center gap-1.5 mb-2">
+                        <div class="w-6 h-6 bg-orange-500 rounded-md flex items-center justify-center">
+                            <i class="fa-solid fa-bowl-rice text-white text-[10px]"></i>
+                        </div>
+                        <h3 class="font-bold text-xs text-gray-800">Ringkasan RMT</h3>
+                        <span class="text-[9px] text-gray-400 font-medium">(Rancangan Makanan Tambahan)</span>
+                    </div>
+                    <div id="rmt-no-data" class="hidden text-xs text-gray-400 text-center py-3">
+                        <i class="fa-solid fa-circle-info mr-1"></i>Tiada data pelajar RMT direkodkan hari ini.
+                    </div>
+                    <div id="rmt-metrics" class="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
+                        <div class="bg-amber-50 rounded-lg p-2 text-center border border-amber-100">
+                            <p id="rmt-pagi" class="text-lg font-black text-amber-600">0</p>
+                            <p class="text-[9px] font-bold text-amber-500">RMT Pagi Hadir</p>
+                            <p id="rmt-pagi-sub" class="text-[9px] text-gray-400"></p>
+                        </div>
+                        <div class="bg-indigo-50 rounded-lg p-2 text-center border border-indigo-100">
+                            <p id="rmt-petang" class="text-lg font-black text-indigo-600">0</p>
+                            <p class="text-[9px] font-bold text-indigo-500">RMT Petang Hadir</p>
+                            <p id="rmt-petang-sub" class="text-[9px] text-gray-400"></p>
+                        </div>
+                        <div class="bg-emerald-50 rounded-lg p-2 text-center border border-emerald-100">
+                            <p id="rmt-total" class="text-lg font-black text-emerald-600">0</p>
+                            <p class="text-[9px] font-bold text-emerald-500">Jumlah RMT Hadir</p>
+                        </div>
+                        <div class="bg-purple-50 rounded-lg p-2 text-center border border-purple-100">
+                            <p id="rmt-coverage" class="text-lg font-black text-purple-600">0%</p>
+                            <p class="text-[9px] font-bold text-purple-500">Liputan RMT</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Class Table -->
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                    <div class="px-3 py-2.5 border-b border-gray-100 flex items-center justify-between">
+                        <div class="flex items-center gap-1.5">
+                            <i class="fa-solid fa-table-list text-blue-500 text-xs"></i>
+                            <h3 class="font-bold text-xs text-gray-800">Status Mengikut Kelas</h3>
+                        </div>
+                        <a id="download-all-btn" href="#" class="hidden items-center gap-1 px-2 py-1 text-[10px] font-bold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition shadow-sm">
+                            <i class="fa-solid fa-download"></i> Muat Turun CSV
+                        </a>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="bg-slate-50 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+                                    <th class="px-3 py-2">Kelas</th>
+                                    <th class="px-3 py-2">Sesi</th>
+                                    <th class="px-3 py-2 text-center">Status</th>
+                                    <th class="px-3 py-2 text-center">Masa</th>
+                                    <th class="px-3 py-2 text-center">Hadir</th>
+                                    <th class="px-3 py-2 text-center">%</th>
+                                    <th class="px-3 py-2 text-center">T/H</th>
+                                    <th class="px-3 py-2">Murid Tidak Hadir</th>
+                                    <th class="px-3 py-2 text-center"><i class="fa-solid fa-download"></i></th>
+                                </tr>
+                            </thead>
+                            <tbody id="class-table-body" class="divide-y divide-gray-50">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="text-center py-4 text-[10px] text-gray-400 mt-4">
+        Hadir@SKBT v2 &copy; 2026 SK Bandar Tawau
+    </footer>
+
+    <!-- Sidebar Toggle Button -->
+    <button onclick="toggleSidebar()" id="sidebar-toggle-btn"
+        class="fixed right-0 top-1/2 -translate-y-1/2 z-30 bg-indigo-600 hover:bg-indigo-700 text-white px-1.5 py-3 rounded-l-lg shadow-lg transition-all group"
+        title="Rumusan Kehadiran">
+        <i class="fa-solid fa-chart-line text-sm"></i>
+        <span class="block text-[8px] font-bold mt-1 leading-tight">Rumusan</span>
+    </button>
+
+    <!-- Sidebar Overlay -->
+    <div id="sidebar-overlay" class="hidden fixed inset-0 bg-black/40 z-40" onclick="toggleSidebar()"></div>
+
+    <!-- Sidebar Panel -->
+    <div id="sidebar-panel" class="fixed top-0 right-0 h-full w-full sm:w-[380px] bg-white shadow-2xl z-50 transform translate-x-full transition-transform duration-300 ease-in-out flex flex-col">
+        <!-- Sidebar Header -->
+        <div class="bg-gradient-to-r from-indigo-600 to-blue-600 px-4 py-3 flex items-center justify-between shrink-0">
+            <div class="flex items-center gap-2">
+                <i class="fa-solid fa-chart-line text-white text-sm"></i>
+                <h2 class="text-sm font-bold text-white">Rumusan Kehadiran</h2>
+            </div>
+            <button onclick="toggleSidebar()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition">
+                <i class="fa-solid fa-xmark text-white text-xs"></i>
+            </button>
+        </div>
+
+        <!-- Tabs -->
+        <div class="flex border-b border-gray-200 shrink-0">
+            <button onclick="switchSidebarTab('student')" id="tab-student"
+                class="flex-1 py-2.5 text-xs font-bold text-center transition sidebar-tab active">
+                <i class="fa-solid fa-user mr-1"></i>Murid
+            </button>
+            <button onclick="switchSidebarTab('class')" id="tab-class"
+                class="flex-1 py-2.5 text-xs font-bold text-center transition sidebar-tab">
+                <i class="fa-solid fa-chalkboard-user mr-1"></i>Kelas
+            </button>
+        </div>
+
+        <!-- Tab Content: Student -->
+        <div id="tab-content-student" class="flex-1 overflow-y-auto p-3 space-y-3">
+            <!-- Class filter -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Kelas</label>
+                <select id="sidebar-class-filter" onchange="loadSidebarStudents()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-indigo-400 outline-none bg-white">
+                    <option value="">— Pilih kelas —</option>
+                </select>
+            </div>
+            <!-- Student select -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Murid</label>
+                <select id="sidebar-student-select" onchange="loadStudentSummary()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-indigo-400 outline-none bg-white">
+                    <option value="">— Pilih murid —</option>
+                </select>
+            </div>
+            <!-- Student Summary -->
+            <div id="student-summary-content">
+                <div class="text-center py-8">
+                    <i class="fa-solid fa-user-graduate text-3xl text-gray-200"></i>
+                    <p class="text-xs text-gray-400 mt-2">Pilih murid untuk melihat rumusan kehadiran.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab Content: Class -->
+        <div id="tab-content-class" class="flex-1 overflow-y-auto p-3 space-y-3 hidden">
+            <!-- Class select -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Kelas</label>
+                <select id="sidebar-class-select" onchange="loadClassSummary()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-indigo-400 outline-none bg-white">
+                    <option value="">— Pilih kelas —</option>
+                </select>
+            </div>
+            <!-- Class Summary -->
+            <div id="class-summary-content">
+                <div class="text-center py-8">
+                    <i class="fa-solid fa-school text-3xl text-gray-200"></i>
+                    <p class="text-xs text-gray-400 mt-2">Pilih kelas untuk melihat rumusan kehadiran.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

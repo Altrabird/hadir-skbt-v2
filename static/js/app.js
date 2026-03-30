@@ -1,0 +1,618 @@
+/**
+ * Hadir@SKBT v2 — Frontend Application
+ */
+
+let currentStudents = [];
+let currentClass = "";
+let selectedDate = "";
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+document.addEventListener("DOMContentLoaded", () => {
+    const picker = document.getElementById("date-picker");
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, "0");
+    const d = String(today.getDate()).padStart(2, "0");
+    selectedDate = `${y}-${m}-${d}`;
+    picker.value = selectedDate;
+
+    picker.addEventListener("change", () => {
+        selectedDate = picker.value;
+        refreshDashboard();
+    });
+
+    loadClasses();
+    refreshDashboard();
+});
+
+// ---------------------------------------------------------------------------
+// Utility
+// ---------------------------------------------------------------------------
+function showLoading() { document.getElementById("loading-overlay").classList.remove("hidden"); }
+function hideLoading() { document.getElementById("loading-overlay").classList.add("hidden"); }
+
+function showToast(message, type = "success") {
+    const container = document.getElementById("toast-container");
+    const styles = {
+        success: "bg-emerald-600",
+        error: "bg-red-600",
+        info: "bg-blue-600",
+    };
+    const icons = {
+        success: "fa-circle-check",
+        error: "fa-circle-exclamation",
+        info: "fa-circle-info",
+    };
+
+    const el = document.createElement("div");
+    el.className = `flex items-center gap-2 px-3 py-2.5 rounded-lg shadow-xl text-xs font-semibold text-white ${styles[type] || styles.info} animate-slide-in`;
+    el.innerHTML = `<i class="fa-solid ${icons[type] || icons.info}"></i><span>${message}</span>`;
+    container.appendChild(el);
+
+    setTimeout(() => {
+        el.style.opacity = "0";
+        el.style.transform = "translateX(100%)";
+        el.style.transition = "all 0.25s ease";
+        setTimeout(() => el.remove(), 250);
+    }, 3000);
+}
+
+function toggleSection(id) {
+    const body = document.getElementById(id);
+    const btn = body.previousElementSibling;
+    const chevron = btn.querySelector(".section-chevron");
+    body.classList.toggle("hidden");
+    chevron.classList.toggle("rotate-180");
+}
+
+async function apiFetch(url, options = {}) {
+    try {
+        const res = await fetch(url, options);
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: res.statusText }));
+            throw new Error(err.error || res.statusText);
+        }
+        return res;
+    } catch (e) {
+        showToast(e.message, "error");
+        throw e;
+    }
+}
+
+function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+function setText(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = value;
+}
+
+// ---------------------------------------------------------------------------
+// Load classes
+// ---------------------------------------------------------------------------
+async function loadClasses() {
+    try {
+        const res = await apiFetch("/api/classes");
+        const classes = await res.json();
+        const select = document.getElementById("class-select");
+        select.innerHTML = '<option value="">— Pilih kelas —</option>';
+        classes.forEach(c => {
+            const opt = document.createElement("option");
+            opt.value = c;
+            opt.textContent = c;
+            select.appendChild(opt);
+        });
+    } catch { /* toast shown */ }
+}
+
+// ---------------------------------------------------------------------------
+// Load students
+// ---------------------------------------------------------------------------
+async function loadStudents() {
+    const select = document.getElementById("class-select");
+    currentClass = select.value;
+    const list = document.getElementById("student-list");
+    const submitBtn = document.getElementById("submit-btn");
+    const notice = document.getElementById("existing-notice");
+    notice.classList.add("hidden");
+    notice.classList.remove("flex");
+
+    if (!currentClass) {
+        list.innerHTML = '<p class="text-sm text-gray-400 py-6 text-center"><i class="fa-solid fa-users text-gray-300 mr-1"></i> Sila pilih kelas.</p>';
+        submitBtn.disabled = true;
+        return;
+    }
+
+    showLoading();
+    try {
+        const [studentsRes, attendanceRes] = await Promise.all([
+            apiFetch(`/api/students/${encodeURIComponent(currentClass)}`),
+            apiFetch(`/api/attendance/${selectedDate}/${encodeURIComponent(currentClass)}`),
+        ]);
+        currentStudents = await studentsRes.json();
+        const existing = await attendanceRes.json();
+
+        const prefill = {};
+        if (existing.length > 0) {
+            notice.classList.remove("hidden");
+            notice.classList.add("flex");
+            existing.forEach(r => { prefill[r.name] = r.status; });
+        }
+
+        list.innerHTML = "";
+        currentStudents.forEach((s, i) => {
+            const isAbsent = prefill[s.name] === "Absent";
+            const row = document.createElement("div");
+            row.className = "student-row";
+            row.innerHTML = `
+                <div class="flex items-center gap-2 min-w-0">
+                    <span class="w-5 text-[10px] text-gray-400 font-mono text-right">${i + 1}</span>
+                    ${s.is_rmt ? '<i class="fa-solid fa-bowl-rice text-[10px] text-orange-400" title="RMT"></i>' : ""}
+                    <span class="text-xs font-semibold text-gray-700 truncate">${escapeHtml(s.name)}</span>
+                </div>
+                <button type="button" onclick="toggleStudent(this)" data-index="${i}"
+                    class="shrink-0 status-toggle ${isAbsent ? "absent" : "present"}">
+                    <span class="toggle-label">${isAbsent ? "Tidak Hadir" : "Hadir"}</span>
+                </button>
+            `;
+            list.appendChild(row);
+        });
+        submitBtn.disabled = false;
+    } catch {
+        list.innerHTML = '<p class="text-xs text-red-500 py-6 text-center"><i class="fa-solid fa-triangle-exclamation mr-1"></i>Gagal memuatkan senarai murid.</p>';
+        submitBtn.disabled = true;
+    } finally {
+        hideLoading();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Toggle
+// ---------------------------------------------------------------------------
+function toggleStudent(btn) {
+    const isPresent = btn.classList.contains("present");
+    btn.classList.toggle("present", !isPresent);
+    btn.classList.toggle("absent", isPresent);
+    btn.querySelector(".toggle-label").textContent = isPresent ? "Tidak Hadir" : "Hadir";
+}
+
+function setAllStatus(present) {
+    document.querySelectorAll(".status-toggle").forEach(btn => {
+        btn.classList.toggle("present", present);
+        btn.classList.toggle("absent", !present);
+        btn.querySelector(".toggle-label").textContent = present ? "Hadir" : "Tidak Hadir";
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Submit
+// ---------------------------------------------------------------------------
+async function submitAttendance() {
+    if (!currentClass || currentStudents.length === 0) return;
+
+    const btns = document.querySelectorAll(".status-toggle");
+    const students = [];
+    btns.forEach((btn, i) => {
+        students.push({
+            name: currentStudents[i].name,
+            status: btn.classList.contains("absent") ? "Absent" : "Present",
+        });
+    });
+
+    const absentCount = students.filter(s => s.status === "Absent").length;
+    if (!confirm(`Hantar kehadiran untuk ${currentClass}?\n\n${students.length} murid, ${absentCount} tidak hadir.`)) return;
+
+    showLoading();
+    try {
+        const res = await apiFetch("/api/attendance", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ date: selectedDate, class: currentClass, students }),
+        });
+        const data = await res.json();
+        showToast(`Berjaya! ${data.absent_count} murid ditandakan tidak hadir.`, "success");
+        refreshDashboard();
+    } catch { /* toast shown */ }
+    finally { hideLoading(); }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+async function refreshDashboard() {
+    const emptyEl = document.getElementById("dashboard-empty");
+    const contentEl = document.getElementById("dashboard-content");
+
+    try {
+        const res = await apiFetch(`/api/dashboard/${selectedDate}`);
+        const d = await res.json();
+
+        if (!d.has_data) {
+            emptyEl.classList.remove("hidden");
+            contentEl.classList.add("hidden");
+            return;
+        }
+
+        emptyEl.classList.add("hidden");
+        contentEl.classList.remove("hidden");
+
+        setText("m-present", d.total_present);
+        setText("m-present-sub", `daripada ${d.total_marked} murid`);
+        setText("m-absent", d.total_absent);
+        setText("m-absent-sub", `${d.total_marked > 0 ? (d.total_absent / d.total_marked * 100).toFixed(1) : 0}%`);
+        setText("m-classes", d.classes_updated);
+        setText("m-classes-sub", `daripada ${d.total_classes} kelas`);
+        setText("m-rate", `${d.attendance_rate}%`);
+
+        setText("pagi-present", d.pagi.present);
+        setText("pagi-absent", d.pagi.absent);
+        setText("pagi-pct", `${d.pagi.present_pct}%`);
+        setText("petang-present", d.petang.present);
+        setText("petang-absent", d.petang.absent);
+        setText("petang-pct", `${d.petang.present_pct}%`);
+
+        const rmt = d.rmt;
+        if (rmt.total_marked === 0) {
+            document.getElementById("rmt-no-data").classList.remove("hidden");
+            document.getElementById("rmt-metrics").classList.add("hidden");
+        } else {
+            document.getElementById("rmt-no-data").classList.add("hidden");
+            document.getElementById("rmt-metrics").classList.remove("hidden");
+            setText("rmt-pagi", rmt.pagi_present);
+            setText("rmt-pagi-sub", `drp ${rmt.pagi_total}`);
+            setText("rmt-petang", rmt.petang_present);
+            setText("rmt-petang-sub", `drp ${rmt.petang_total}`);
+            setText("rmt-total", rmt.total_present);
+            setText("rmt-coverage", `${rmt.coverage_pct}%`);
+        }
+
+        const dlBtn = document.getElementById("download-all-btn");
+        if (d.total_absent > 0) {
+            dlBtn.href = `/api/export/${selectedDate}`;
+            dlBtn.classList.remove("hidden");
+            dlBtn.classList.add("inline-flex");
+        } else {
+            dlBtn.classList.add("hidden");
+            dlBtn.classList.remove("inline-flex");
+        }
+
+        renderClassTable(d.class_summary);
+    } catch { /* toast shown */ }
+}
+
+function renderClassTable(summary) {
+    const tbody = document.getElementById("class-table-body");
+    tbody.innerHTML = "";
+
+    summary.forEach(row => {
+        const tr = document.createElement("tr");
+
+        const statusBadge = row.status === "updated"
+            ? '<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700"><i class="fa-solid fa-circle-check text-[8px]"></i> OK</span>'
+            : '<span class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-gray-100 text-gray-400"><i class="fa-regular fa-clock text-[8px]"></i> Belum</span>';
+
+        const sessionBadge = row.session === "Pagi"
+            ? '<span class="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded"><i class="fa-solid fa-sun text-[8px] mr-0.5"></i>Pagi</span>'
+            : row.session === "Petang"
+                ? '<span class="text-[10px] font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded"><i class="fa-solid fa-moon text-[8px] mr-0.5"></i>Petang</span>'
+                : '<span class="text-[10px] text-gray-400">—</span>';
+
+        const absentNames = row.absent_names.length > 0
+            ? row.absent_names.map(n => `<span class="inline-block bg-red-50 text-red-600 text-[10px] font-medium px-1 py-0.5 rounded mr-0.5 mb-0.5">${escapeHtml(n)}</span>`).join("")
+            : '<span class="text-gray-300 text-[10px]">—</span>';
+
+        const csvBtn = row.status === "updated"
+            ? `<a href="/api/export/${selectedDate}/${encodeURIComponent(row.class)}" class="inline-flex items-center justify-center w-6 h-6 rounded bg-blue-50 hover:bg-blue-100 transition" title="CSV"><i class="fa-solid fa-download text-[9px] text-blue-500"></i></a>`
+            : '<span class="text-gray-200">—</span>';
+
+        tr.innerHTML = `
+            <td class="px-3 py-2 font-bold text-gray-800">${escapeHtml(row.class)}</td>
+            <td class="px-3 py-2">${sessionBadge}</td>
+            <td class="px-3 py-2 text-center">${statusBadge}</td>
+            <td class="px-3 py-2 text-center text-[10px] text-gray-500">${row.time}</td>
+            <td class="px-3 py-2 text-center font-bold text-emerald-600">${row.present}</td>
+            <td class="px-3 py-2 text-center text-[10px] text-gray-500">${row.present_pct}%</td>
+            <td class="px-3 py-2 text-center font-bold ${row.absent > 0 ? "text-red-600" : "text-gray-300"}">${row.absent}</td>
+            <td class="px-3 py-2">${absentNames}</td>
+            <td class="px-3 py-2 text-center">${csvBtn}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar
+// ---------------------------------------------------------------------------
+let sidebarOpen = false;
+let sidebarStudentsList = null; // cached from API
+
+function toggleSidebar() {
+    const panel = document.getElementById("sidebar-panel");
+    const overlay = document.getElementById("sidebar-overlay");
+    const toggleBtn = document.getElementById("sidebar-toggle-btn");
+
+    sidebarOpen = !sidebarOpen;
+    panel.classList.toggle("open", sidebarOpen);
+    overlay.classList.toggle("hidden", !sidebarOpen);
+    toggleBtn.classList.toggle("hidden", sidebarOpen);
+
+    if (sidebarOpen && !sidebarStudentsList) {
+        loadSidebarData();
+    }
+}
+
+async function loadSidebarData() {
+    try {
+        const res = await apiFetch("/api/summary/students-list");
+        sidebarStudentsList = await res.json();
+
+        // Populate class dropdowns in both tabs
+        const classFilter = document.getElementById("sidebar-class-filter");
+        const classSelect = document.getElementById("sidebar-class-select");
+
+        let classOpts = '<option value="">— Pilih kelas —</option>';
+        sidebarStudentsList.forEach(c => {
+            classOpts += `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`;
+        });
+        classFilter.innerHTML = classOpts;
+        classSelect.innerHTML = classOpts;
+    } catch { /* toast shown */ }
+}
+
+function switchSidebarTab(tab) {
+    const studentTab = document.getElementById("tab-student");
+    const classTab = document.getElementById("tab-class");
+    const studentContent = document.getElementById("tab-content-student");
+    const classContent = document.getElementById("tab-content-class");
+
+    if (tab === "student") {
+        studentTab.classList.add("active");
+        classTab.classList.remove("active");
+        studentContent.classList.remove("hidden");
+        classContent.classList.add("hidden");
+    } else {
+        classTab.classList.add("active");
+        studentTab.classList.remove("active");
+        classContent.classList.remove("hidden");
+        studentContent.classList.add("hidden");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar: Student Tab
+// ---------------------------------------------------------------------------
+function loadSidebarStudents() {
+    const classFilter = document.getElementById("sidebar-class-filter");
+    const studentSelect = document.getElementById("sidebar-student-select");
+    const cls = classFilter.value;
+
+    studentSelect.innerHTML = '<option value="">— Pilih murid —</option>';
+    document.getElementById("student-summary-content").innerHTML = `
+        <div class="text-center py-8">
+            <i class="fa-solid fa-user-graduate text-3xl text-gray-200"></i>
+            <p class="text-xs text-gray-400 mt-2">Pilih murid untuk melihat rumusan kehadiran.</p>
+        </div>`;
+
+    if (!cls || !sidebarStudentsList) return;
+
+    const classData = sidebarStudentsList.find(c => c.name === cls);
+    if (!classData) return;
+
+    classData.students.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        studentSelect.appendChild(opt);
+    });
+}
+
+async function loadStudentSummary() {
+    const studentName = document.getElementById("sidebar-student-select").value;
+    const container = document.getElementById("student-summary-content");
+
+    if (!studentName) {
+        container.innerHTML = `
+            <div class="text-center py-8">
+                <i class="fa-solid fa-user-graduate text-3xl text-gray-200"></i>
+                <p class="text-xs text-gray-400 mt-2">Pilih murid untuk melihat rumusan kehadiran.</p>
+            </div>`;
+        return;
+    }
+
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto"></div></div>`;
+
+    try {
+        const res = await apiFetch(`/api/summary/student/${encodeURIComponent(studentName)}`);
+        const d = await res.json();
+
+        const rateColor = d.rate >= 90 ? "emerald" : d.rate >= 75 ? "amber" : "red";
+        const rateIcon = d.rate >= 90 ? "fa-face-smile" : d.rate >= 75 ? "fa-face-meh" : "fa-face-frown";
+
+        container.innerHTML = `
+            <!-- Name & Class -->
+            <div class="bg-gradient-to-r from-indigo-500 to-blue-500 rounded-xl p-3 text-white">
+                <div class="flex items-center gap-2 mb-1">
+                    <i class="fa-solid fa-user-graduate text-sm text-indigo-200"></i>
+                    <span class="text-xs font-bold truncate">${escapeHtml(d.name)}</span>
+                </div>
+                <span class="text-[10px] text-indigo-200"><i class="fa-solid fa-chalkboard mr-0.5"></i>${escapeHtml(d.class)}</span>
+            </div>
+
+            <!-- Rate Card -->
+            <div class="bg-${rateColor}-50 border border-${rateColor}-200 rounded-xl p-3 text-center">
+                <i class="fa-solid ${rateIcon} text-2xl text-${rateColor}-500 mb-1"></i>
+                <p class="text-2xl font-black text-${rateColor}-600">${d.rate}%</p>
+                <p class="text-[10px] font-bold text-${rateColor}-500 uppercase tracking-wider">Kadar Kehadiran</p>
+                <!-- Bar -->
+                <div class="attendance-bar mt-2">
+                    <div class="attendance-bar-fill" style="width: ${d.rate}%"></div>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-3 gap-1.5">
+                <div class="bg-blue-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-blue-600">${d.total_days}</p>
+                    <p class="text-[9px] font-bold text-blue-500">Hari Rekod</p>
+                </div>
+                <div class="bg-emerald-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-emerald-600">${d.present}</p>
+                    <p class="text-[9px] font-bold text-emerald-500">Hadir</p>
+                </div>
+                <div class="bg-red-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-red-600">${d.absent}</p>
+                    <p class="text-[9px] font-bold text-red-500">Tidak Hadir</p>
+                </div>
+            </div>
+
+            <!-- Absent Dates -->
+            ${d.absent_dates.length > 0 ? `
+                <div>
+                    <div class="flex items-center gap-1 mb-1.5">
+                        <i class="fa-solid fa-calendar-xmark text-[10px] text-red-400"></i>
+                        <span class="text-[10px] font-bold text-gray-600 uppercase tracking-wider">Tarikh Tidak Hadir</span>
+                    </div>
+                    <div class="space-y-0.5">
+                        ${d.absent_dates.map(date => `
+                            <div class="flex items-center gap-1.5 px-2 py-1 bg-red-50 rounded text-[10px] font-medium text-red-600">
+                                <i class="fa-solid fa-circle text-[4px]"></i>
+                                ${formatDate(date)}
+                            </div>
+                        `).join("")}
+                    </div>
+                </div>
+            ` : `
+                <div class="text-center py-3">
+                    <i class="fa-solid fa-award text-xl text-emerald-400"></i>
+                    <p class="text-[10px] text-emerald-600 font-bold mt-1">Kehadiran penuh! Tiada rekod tidak hadir.</p>
+                </div>
+            `}
+        `;
+    } catch {
+        container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data.</p>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar: Class Tab
+// ---------------------------------------------------------------------------
+async function loadClassSummary() {
+    const className = document.getElementById("sidebar-class-select").value;
+    const container = document.getElementById("class-summary-content");
+
+    if (!className) {
+        container.innerHTML = `
+            <div class="text-center py-8">
+                <i class="fa-solid fa-school text-3xl text-gray-200"></i>
+                <p class="text-xs text-gray-400 mt-2">Pilih kelas untuk melihat rumusan kehadiran.</p>
+            </div>`;
+        return;
+    }
+
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto"></div></div>`;
+
+    try {
+        const res = await apiFetch(`/api/summary/class/${encodeURIComponent(className)}`);
+        const d = await res.json();
+
+        const rateColor = d.avg_rate >= 90 ? "emerald" : d.avg_rate >= 75 ? "amber" : "red";
+        const sessionIcon = d.session === "Pagi" ? "fa-sun" : "fa-moon";
+        const sessionColor = d.session === "Pagi" ? "amber" : "indigo";
+
+        let studentRows = "";
+        d.student_summary.forEach((s, i) => {
+            const sColor = s.rate >= 90 ? "emerald" : s.rate >= 75 ? "amber" : "red";
+            studentRows += `
+                <div class="summary-student-row">
+                    <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                        <span class="w-4 text-[9px] text-gray-400 text-right">${i + 1}</span>
+                        <span class="font-semibold text-gray-700 truncate">${escapeHtml(s.name)}</span>
+                    </div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <span class="text-emerald-600 font-bold w-5 text-right">${s.present}</span>
+                        <span class="text-red-500 font-bold w-5 text-right">${s.absent}</span>
+                        <span class="font-black text-${sColor}-600 w-10 text-right">${s.rate}%</span>
+                    </div>
+                </div>
+            `;
+        });
+
+        container.innerHTML = `
+            <!-- Class Header -->
+            <div class="bg-gradient-to-r from-${sessionColor}-500 to-${sessionColor}-600 rounded-xl p-3 text-white">
+                <div class="flex items-center gap-2 mb-0.5">
+                    <i class="fa-solid fa-chalkboard-user text-sm text-${sessionColor}-200"></i>
+                    <span class="text-xs font-bold">${escapeHtml(d.class)}</span>
+                </div>
+                <span class="text-[10px] text-${sessionColor}-200">
+                    <i class="fa-solid ${sessionIcon} mr-0.5"></i>Sesi ${d.session}
+                    &bull; ${d.total_students} murid
+                </span>
+            </div>
+
+            <!-- Summary Stats -->
+            <div class="grid grid-cols-3 gap-1.5">
+                <div class="bg-blue-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-blue-600">${d.total_days}</p>
+                    <p class="text-[9px] font-bold text-blue-500">Hari Rekod</p>
+                </div>
+                <div class="bg-${rateColor}-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-${rateColor}-600">${d.avg_rate}%</p>
+                    <p class="text-[9px] font-bold text-${rateColor}-500">Purata Kadar</p>
+                </div>
+                <div class="bg-purple-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-purple-600">${d.total_students}</p>
+                    <p class="text-[9px] font-bold text-purple-500">Jumlah Murid</p>
+                </div>
+            </div>
+
+            <!-- Attendance Bar -->
+            <div>
+                <div class="flex justify-between text-[9px] font-bold text-gray-500 mb-0.5">
+                    <span>Purata Kehadiran</span>
+                    <span class="text-${rateColor}-600">${d.avg_rate}%</span>
+                </div>
+                <div class="attendance-bar">
+                    <div class="attendance-bar-fill" style="width: ${d.avg_rate}%"></div>
+                </div>
+            </div>
+
+            <!-- Per-Student Table -->
+            <div>
+                <div class="flex items-center justify-between mb-1.5">
+                    <div class="flex items-center gap-1">
+                        <i class="fa-solid fa-list-ol text-[10px] text-gray-400"></i>
+                        <span class="text-[10px] font-bold text-gray-600 uppercase tracking-wider">Senarai Murid</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-[8px] font-bold text-gray-400 uppercase">
+                        <span class="text-emerald-500">H</span>
+                        <span class="text-red-500">TH</span>
+                        <span>%</span>
+                    </div>
+                </div>
+                <div class="max-h-[300px] overflow-y-auto rounded-lg border border-gray-100">
+                    ${studentRows}
+                </div>
+            </div>
+        `;
+    } catch {
+        container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data.</p>`;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Utility: Format date
+// ---------------------------------------------------------------------------
+function formatDate(dateStr) {
+    const months = ["Jan","Feb","Mac","Apr","Mei","Jun","Jul","Ogo","Sep","Okt","Nov","Dis"];
+    const parts = dateStr.split("-");
+    if (parts.length === 3) {
+        return `${parseInt(parts[2])} ${months[parseInt(parts[1]) - 1]} ${parts[0]}`;
+    }
+    return dateStr;
+}
