@@ -84,10 +84,65 @@ table tbody tr { transition: background 0.1s; }
 table tbody tr:hover { background: #f8fafc; }
 
 @media (max-width: 768px) {
-    table { font-size: 0.65rem; }
-    table th, table td { padding: 0.35rem 0.25rem; }
     .metric-card { padding: 0.5rem; }
     .metric-card p.text-2xl { font-size: 1.25rem; }
+
+    /* Class table → card layout on mobile */
+    .class-table-wrapper table thead { display: none; }
+    .class-table-wrapper table tbody { display: flex; flex-direction: column; gap: 0.5rem; }
+    .class-table-wrapper table tbody tr {
+        display: block;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 0.75rem;
+        padding: 0.625rem 0.75rem;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .class-table-wrapper table tbody tr:hover { background: #f8fafc; }
+    .class-table-wrapper table tbody td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.2rem 0;
+        border: none !important;
+        font-size: 0.7rem;
+    }
+    .class-table-wrapper table tbody td::before {
+        content: attr(data-label);
+        font-weight: 700;
+        font-size: 0.6rem;
+        color: #6b7280;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        min-width: 4.5rem;
+        flex-shrink: 0;
+    }
+    .class-table-wrapper table tbody td[data-label=""]::before { display: none; }
+    .class-table-wrapper table tbody td.td-csv { display: none; }
+    .class-table-wrapper table tbody td[data-label="Tidak Hadir"] {
+        flex-wrap: wrap;
+        gap: 0.25rem;
+    }
+
+    /* Student list shorter on mobile */
+    #student-list { max-height: 300px; }
+}
+
+/* Mobile: attendance buttons full-width */
+@media (max-width: 640px) {
+    .attendance-actions {
+        flex-direction: row;
+        width: 100%;
+    }
+    .attendance-actions button {
+        flex: 1;
+        text-align: center;
+    }
+
+    /* Sidebar toggle bigger touch target */
+    #sidebar-toggle-btn {
+        padding: 0.5rem 0.625rem;
+    }
 }
 
 /* Sidebar */

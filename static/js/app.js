@@ -311,15 +311,15 @@ function renderClassTable(summary) {
             : '<span class="text-gray-200">—</span>';
 
         tr.innerHTML = `
-            <td class="px-3 py-2 font-bold text-gray-800">${escapeHtml(row.class)}</td>
-            <td class="px-3 py-2">${sessionBadge}</td>
-            <td class="px-3 py-2 text-center">${statusBadge}</td>
-            <td class="px-3 py-2 text-center text-[10px] text-gray-500">${row.time}</td>
-            <td class="px-3 py-2 text-center font-bold text-emerald-600">${row.present}</td>
-            <td class="px-3 py-2 text-center text-[10px] text-gray-500">${row.present_pct}%</td>
-            <td class="px-3 py-2 text-center font-bold ${row.absent > 0 ? "text-red-600" : "text-gray-300"}">${row.absent}</td>
-            <td class="px-3 py-2">${absentNames}</td>
-            <td class="px-3 py-2 text-center">${csvBtn}</td>
+            <td data-label="Kelas" class="px-3 py-2 font-bold text-gray-800">${escapeHtml(row.class)}</td>
+            <td data-label="Sesi" class="px-3 py-2">${sessionBadge}</td>
+            <td data-label="Status" class="px-3 py-2 text-center">${statusBadge}</td>
+            <td data-label="Masa" class="px-3 py-2 text-center text-[10px] text-gray-500">${row.time}</td>
+            <td data-label="Hadir" class="px-3 py-2 text-center font-bold text-emerald-600">${row.present}</td>
+            <td data-label="Kadar" class="px-3 py-2 text-center text-[10px] text-gray-500">${row.present_pct}%</td>
+            <td data-label="T/Hadir" class="px-3 py-2 text-center font-bold ${row.absent > 0 ? "text-red-600" : "text-gray-300"}">${row.absent}</td>
+            <td data-label="Tidak Hadir" class="px-3 py-2">${absentNames}</td>
+            <td data-label="" class="px-3 py-2 text-center td-csv">${csvBtn}</td>
         `;
         tbody.appendChild(tr);
     });
