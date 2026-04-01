@@ -127,6 +127,50 @@ def get_session(class_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Notification control + settings persistence
+# ---------------------------------------------------------------------------
+SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_settings.json")
+
+
+def load_bot_settings() -> dict:
+    """Load bot settings from file."""
+    try:
+        if os.path.exists(SETTINGS_FILE):
+            import json
+            with open(SETTINGS_FILE, "r") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"notifikasi": True, "admin_chat_id": ""}
+
+
+def save_bot_settings(settings: dict):
+    """Save bot settings to file."""
+    import json
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f)
+
+
+def is_notifikasi_on() -> bool:
+    """Check if scheduled notifications are enabled."""
+    return load_bot_settings().get("notifikasi", True)
+
+
+def get_admin_chat_id() -> str:
+    """Get admin's personal chat ID for alerts."""
+    return str(load_bot_settings().get("admin_chat_id", ""))
+
+
+def is_school_day(date_str: str) -> bool:
+    """Check if a date is a weekday (auto skip Sat & Sun)."""
+    try:
+        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.weekday() not in (5, 6)
+    except Exception:
+        return True
+
+
+# ---------------------------------------------------------------------------
 # Telegram helpers
 # ---------------------------------------------------------------------------
 log = logging.getLogger(__name__)
@@ -331,15 +375,27 @@ def send_session_update(date_str: str, session: str, is_scheduled: bool = False)
 def scheduled_pagi_summary():
     """Post final Pagi summary at 10:00 AM."""
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
-    invalidate_cache()  # fresh data
+    if not is_school_day(today) or not is_notifikasi_on():
+        return
+    invalidate_cache()
     send_session_update(today, "Pagi", is_scheduled=True)
+    # Alert admin personally
+    admin_id = get_admin_chat_id()
+    if admin_id:
+        telegram_send(admin_id, "Laporan Sesi Pagi telah dihantar ke group.")
 
 
 def scheduled_petang_summary():
     """Post final Petang summary at 3:00 PM."""
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
-    invalidate_cache()  # fresh data
+    if not is_school_day(today) or not is_notifikasi_on():
+        return
+    invalidate_cache()
     send_session_update(today, "Petang", is_scheduled=True)
+    # Alert admin personally
+    admin_id = get_admin_chat_id()
+    if admin_id:
+        telegram_send(admin_id, "Laporan Sesi Petang telah dihantar ke group.")
 
 
 scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
@@ -375,9 +431,57 @@ def telegram_webhook():
             return "ok", 200
 
         today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+        parts = text.split()
+
+        # Notification control commands
+        if len(parts) >= 2 and parts[1] == "notifikasi":
+            settings = load_bot_settings()
+            if len(parts) >= 3:
+                if parts[2] == "on":
+                    settings["notifikasi"] = True
+                    # Save sender's personal chat for alerts
+                    sender_id = str(msg.get("from", {}).get("id", ""))
+                    if sender_id:
+                        settings["admin_chat_id"] = sender_id
+                    save_bot_settings(settings)
+                    telegram_send(chat_id, "Notifikasi auto DIHIDUPKAN.\nBot akan hantar laporan pada jam 3:00 PM (hari persekolahan).")
+                elif parts[2] == "off":
+                    settings["notifikasi"] = False
+                    save_bot_settings(settings)
+                    telegram_send(chat_id, "Notifikasi auto DIMATIKAN.\nBot tidak akan hantar laporan automatik sehingga dihidupkan semula.")
+                elif parts[2] == "status":
+                    status = "HIDUP" if settings.get("notifikasi", True) else "MATI"
+                    admin_id = settings.get("admin_chat_id", "")
+                    admin_status = "Ditetapkan" if admin_id else "Belum ditetapkan"
+                    telegram_send(chat_id, f"Status notifikasi: <b>{status}</b>\nAlert peribadi: {admin_status}\n\nSabtu & Ahad auto skip.")
+                else:
+                    telegram_send(chat_id, "Format:\nhadirskbt notifikasi on\nhadirskbt notifikasi off\nhadirskbt notifikasi status")
+            else:
+                telegram_send(chat_id, "Format:\nhadirskbt notifikasi on\nhadirskbt notifikasi off\nhadirskbt notifikasi status")
+            return "ok", 200
+
+        # Help command
+        if len(parts) >= 2 and parts[1] == "help":
+            help_text = (
+                "<b>ARAHAN BOT HADIR@SKBT:</b>\n"
+                "\n"
+                "<b>Laporan:</b>\n"
+                "hadirskbt - Laporan semua sesi\n"
+                "hadirskbt petang - Laporan Petang\n"
+                "hadirskbt pagi - Laporan Pagi\n"
+                "\n"
+                "<b>Kawalan:</b>\n"
+                "hadirskbt notifikasi on - Hidupkan auto\n"
+                "hadirskbt notifikasi off - Matikan auto\n"
+                "hadirskbt notifikasi status - Semak status\n"
+                "hadirskbt help - Senarai arahan"
+            )
+            telegram_send(chat_id, help_text)
+            return "ok", 200
+
+        # Summary commands
         invalidate_cache()
 
-        parts = text.split()
         if len(parts) >= 2 and parts[1] in ("petang", "pagi"):
             session = parts[1].capitalize()
             summary = build_session_summary(today, session)
@@ -563,9 +667,9 @@ def api_submit_attendance():
 
         invalidate_cache(SHEET_ATTENDANCE)
 
-        # Send Telegram update only if recording for today's date
+        # Send Telegram update only if recording for today and it's a school day
         today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
-        if target_date == today:
+        if target_date == today and is_school_day(today):
             session = get_session(target_class)
             try:
                 send_session_update(target_date, session)
