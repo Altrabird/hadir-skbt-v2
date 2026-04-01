@@ -346,6 +346,70 @@ scheduler.start()
 
 
 # ---------------------------------------------------------------------------
+# Telegram webhook — receive messages from Telegram
+# ---------------------------------------------------------------------------
+@app.route(f"/api/telegram/webhook/{TELEGRAM_SECRET}", methods=["POST"])
+def telegram_webhook():
+    """Handle incoming Telegram messages.
+    Users can type:
+        hadirskbt         → summary keseluruhan
+        hadirskbt petang  → summary petang only
+        hadirskbt pagi    → summary pagi only
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return "ok", 200
+
+        msg = data.get("message", {})
+        text = (msg.get("text") or "").strip().lower()
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+
+        if not text.startswith("hadirskbt"):
+            return "ok", 200
+
+        today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+        invalidate_cache()
+
+        parts = text.split()
+        if len(parts) >= 2 and parts[1] in ("petang", "pagi"):
+            session = parts[1].capitalize()
+            summary = build_session_summary(today, session)
+            telegram_send(chat_id, summary)
+        else:
+            # Send both sessions
+            for session in ["Pagi", "Petang"]:
+                summary = build_session_summary(today, session)
+                telegram_send(chat_id, summary)
+
+    except Exception as e:
+        log.warning("Webhook error: %s", e)
+
+    return "ok", 200
+
+
+def setup_telegram_webhook():
+    """Register webhook URL with Telegram."""
+    if not TELEGRAM_TOKEN:
+        return
+    webhook_url = f"https://hadirskbt.altrabird.click/api/telegram/webhook/{TELEGRAM_SECRET}"
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
+        resp = http_requests.post(url, json={"url": webhook_url}, timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            log.info("Telegram webhook set: %s", webhook_url)
+        else:
+            log.warning("Webhook setup failed: %s", data)
+    except Exception as e:
+        log.warning("Webhook setup error: %s", e)
+
+
+# Register webhook on startup
+setup_telegram_webhook()
+
+
+# ---------------------------------------------------------------------------
 # Page route
 # ---------------------------------------------------------------------------
 @app.route("/")
