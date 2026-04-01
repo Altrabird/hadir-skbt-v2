@@ -48,7 +48,7 @@ MORNING_YEARS = {"4", "5", "6"}   # Sesi Pagi
 AFTERNOON_YEARS = {"1", "2", "3"} # Sesi Petang
 
 # Secret code for manual Telegram trigger
-TELEGRAM_SECRET = os.getenv("TELEGRAM_SECRET", "skbt2026")
+TELEGRAM_SECRET = os.getenv("TELEGRAM_SECRET", "hadirskbt")
 
 # Telegram Bot
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -873,6 +873,69 @@ def api_telegram_updates():
         return jsonify({"chats": list(chats.values())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/telegram/<secret>")
+def telegram_trigger_page(secret: str):
+    """Simple UI page to trigger Telegram summary with session selection."""
+    if secret != TELEGRAM_SECRET:
+        return "Kod rahsia salah.", 403
+    return '''<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hantar Laporan Telegram</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body class="bg-slate-100 min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-lg p-6 w-full max-w-sm space-y-4">
+        <div class="text-center">
+            <i class="fa-solid fa-paper-plane text-3xl text-blue-500 mb-2"></i>
+            <h1 class="text-lg font-bold text-gray-800">Hantar Laporan ke Telegram</h1>
+            <p class="text-xs text-gray-400 mt-1">Pilih sesi untuk dihantar</p>
+        </div>
+        <div class="space-y-2">
+            <button onclick="send('petang')" class="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-indigo-500 to-indigo-600 hover:from-indigo-600 hover:to-indigo-700 transition shadow-md active:scale-[0.98]">
+                <i class="fa-solid fa-moon mr-2"></i>Sesi Petang (Thn 1-3)
+            </button>
+            <button onclick="send('pagi')" class="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 transition shadow-md active:scale-[0.98]">
+                <i class="fa-solid fa-sun mr-2"></i>Sesi Pagi (Thn 4-6)
+            </button>
+            <button onclick="send('')" class="w-full py-3 rounded-xl font-bold text-sm text-white bg-gradient-to-r from-blue-600 to-indigo-700 hover:from-blue-700 hover:to-indigo-800 transition shadow-md active:scale-[0.98]">
+                <i class="fa-solid fa-paper-plane mr-2"></i>Keseluruhan (Semua Sesi)
+            </button>
+        </div>
+        <div id="result" class="hidden text-center text-sm font-semibold py-2 rounded-lg"></div>
+    </div>
+    <script>
+    async function send(session) {
+        const res = document.getElementById("result");
+        res.className = "text-center text-sm font-semibold py-2 rounded-lg bg-blue-50 text-blue-600";
+        res.textContent = "Menghantar...";
+        res.classList.remove("hidden");
+        try {
+            const url = session
+                ? "/api/telegram/send/''' + secret + '''/" + session
+                : "/api/telegram/send/''' + secret + '''";
+            const r = await fetch(url);
+            const d = await r.json();
+            if (d.success) {
+                res.className = "text-center text-sm font-semibold py-2 rounded-lg bg-emerald-50 text-emerald-600";
+                res.textContent = "Berjaya dihantar ke Telegram!";
+            } else {
+                res.className = "text-center text-sm font-semibold py-2 rounded-lg bg-red-50 text-red-600";
+                res.textContent = d.error || "Gagal menghantar.";
+            }
+        } catch(e) {
+            res.className = "text-center text-sm font-semibold py-2 rounded-lg bg-red-50 text-red-600";
+            res.textContent = "Ralat: " + e.message;
+        }
+    }
+    </script>
+</body>
+</html>'''
 
 
 @app.route("/api/telegram/send/<secret>")
