@@ -343,8 +343,11 @@ def scheduled_petang_summary():
 
 
 scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
-scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
-scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
+# Only schedule Petang (3pm) — Pagi group has no bot admin access
+if TELEGRAM_CHAT_PETANG:
+    scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
+if TELEGRAM_CHAT_PAGI:
+    scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
 scheduler.start()
 
 
