@@ -242,6 +242,9 @@ def build_session_summary(date_str: str, session: str, is_scheduled: bool = Fals
     lines = [
         f"<b>LAPORAN KEHADIRAN - SESI {session_label}</b>",
         f"Tarikh: {pretty_date}",
+        "",
+        "Link idMe: https://idme.moe.gov.my/login",
+        "Link Hadir@SKBT: https://hadirskbt.altrabird.click",
         "─" * 28,
     ]
 
