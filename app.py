@@ -560,12 +560,14 @@ def api_submit_attendance():
 
         invalidate_cache(SHEET_ATTENDANCE)
 
-        # Send Telegram update for this session
-        session = get_session(target_class)
-        try:
-            send_session_update(target_date, session)
-        except Exception as e:
-            log.warning("Telegram update failed: %s", e)
+        # Send Telegram update only if recording for today's date
+        today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+        if target_date == today:
+            session = get_session(target_class)
+            try:
+                send_session_update(target_date, session)
+            except Exception as e:
+                log.warning("Telegram update failed: %s", e)
 
         return jsonify({
             "success": True,
