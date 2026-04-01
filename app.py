@@ -47,6 +47,9 @@ STATUS_ABSENT = "Absent"
 MORNING_YEARS = {"4", "5", "6"}   # Sesi Pagi
 AFTERNOON_YEARS = {"1", "2", "3"} # Sesi Petang
 
+# Secret code for manual Telegram trigger
+TELEGRAM_SECRET = os.getenv("TELEGRAM_SECRET", "skbt2026")
+
 # Telegram Bot
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_PAGI = os.getenv("TELEGRAM_CHAT_PAGI", "")
@@ -870,6 +873,43 @@ def api_telegram_updates():
         return jsonify({"chats": list(chats.values())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/telegram/send/<secret>")
+@app.route("/api/telegram/send/<secret>/<session>")
+def api_telegram_send(secret: str, session: str | None = None):
+    """Manually trigger sending summary to Telegram with secret code.
+    Usage:
+        /api/telegram/send/skbt2026          → send both sessions
+        /api/telegram/send/skbt2026/petang   → send petang only
+        /api/telegram/send/skbt2026/pagi     → send pagi only
+    """
+    if secret != TELEGRAM_SECRET:
+        return jsonify({"error": "Kod rahsia salah"}), 403
+
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    invalidate_cache()
+    results = {}
+
+    sessions_to_send = []
+    if session:
+        s = session.capitalize()
+        if s in ("Pagi", "Petang"):
+            sessions_to_send = [s]
+        else:
+            return jsonify({"error": "Session mesti 'pagi' atau 'petang'"}), 400
+    else:
+        sessions_to_send = ["Pagi", "Petang"]
+
+    for s in sessions_to_send:
+        chat_id = get_chat_id_for_session(s)
+        if chat_id:
+            send_session_update(today, s, is_scheduled=False)
+            results[s] = {"sent": True, "chat_id": chat_id}
+        else:
+            results[s] = {"sent": False, "error": f"Chat ID not configured"}
+
+    return jsonify({"success": True, "date": today, "results": results})
 
 
 @app.route("/api/telegram/test")
