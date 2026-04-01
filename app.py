@@ -5,14 +5,17 @@ Flask backend with Google Sheets integration.
 
 import io
 import datetime
+import logging
 from zoneinfo import ZoneInfo
 from functools import lru_cache
 
 from flask import Flask, render_template, jsonify, request, Response
 import gspread
 import pandas as pd
+import requests as http_requests
 from google.oauth2.service_account import Credentials
 from dotenv import load_dotenv
+from apscheduler.schedulers.background import BackgroundScheduler
 import os
 
 # ---------------------------------------------------------------------------
@@ -43,6 +46,15 @@ STATUS_ABSENT = "Absent"
 # Session mapping — year prefix → session name
 MORNING_YEARS = {"4", "5", "6"}   # Sesi Pagi
 AFTERNOON_YEARS = {"1", "2", "3"} # Sesi Petang
+
+# Telegram Bot
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_PAGI = os.getenv("TELEGRAM_CHAT_PAGI", "")
+TELEGRAM_CHAT_PETANG = os.getenv("TELEGRAM_CHAT_PETANG", "")
+
+# Track last posted message IDs per session+date so we can delete & replace
+# Key: "Pagi:2026-03-17" → message_id (per chat)
+_telegram_msg_ids: dict[str, dict[str, int]] = {}  # {session:date: {chat_id: msg_id}}
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +121,219 @@ def get_session(class_name: str) -> str:
     if year in AFTERNOON_YEARS:
         return "Petang"
     return "Unknown"
+
+
+# ---------------------------------------------------------------------------
+# Telegram helpers
+# ---------------------------------------------------------------------------
+log = logging.getLogger(__name__)
+
+MALAY_DAYS = {
+    "Monday": "Isnin", "Tuesday": "Selasa", "Wednesday": "Rabu",
+    "Thursday": "Khamis", "Friday": "Jumaat", "Saturday": "Sabtu", "Sunday": "Ahad",
+}
+MALAY_MONTHS = [
+    "", "Januari", "Februari", "Mac", "April", "Mei", "Jun",
+    "Julai", "Ogos", "September", "Oktober", "November", "Disember",
+]
+
+
+def format_malay_date(date_str: str) -> str:
+    """Convert '2026-03-17' to '17 Mac 2026 (Selasa)'."""
+    try:
+        dt = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+        day_name = MALAY_DAYS.get(dt.strftime("%A"), dt.strftime("%A"))
+        return f"{dt.day} {MALAY_MONTHS[dt.month]} {dt.year} ({day_name})"
+    except Exception:
+        return date_str
+
+
+def telegram_send(chat_id: str, text: str) -> int | None:
+    """Send a message to a Telegram chat. Returns message_id."""
+    if not TELEGRAM_TOKEN or not chat_id:
+        return None
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        resp = http_requests.post(url, json={
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        data = resp.json()
+        if data.get("ok"):
+            return data["result"]["message_id"]
+        log.warning("Telegram send failed: %s", data)
+    except Exception as e:
+        log.warning("Telegram send error: %s", e)
+    return None
+
+
+def telegram_delete(chat_id: str, message_id: int):
+    """Delete a message from a Telegram chat."""
+    if not TELEGRAM_TOKEN or not chat_id or not message_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/deleteMessage"
+        http_requests.post(url, json={
+            "chat_id": chat_id,
+            "message_id": message_id,
+        }, timeout=10)
+    except Exception:
+        pass
+
+
+def get_chat_id_for_session(session: str) -> str:
+    return TELEGRAM_CHAT_PAGI if session == "Pagi" else TELEGRAM_CHAT_PETANG
+
+
+def build_session_summary(date_str: str, session: str, is_scheduled: bool = False) -> str:
+    """Build a formatted attendance summary for a session (Pagi or Petang)."""
+    records = get_data_from_sheet(SHEET_ATTENDANCE)
+    students_data = get_data_from_sheet(SHEET_STUDENTS)
+    rmt_data = get_data_from_sheet(SHEET_RMT)
+    rmt_set = {str(r["NAME"]).strip().upper() for r in rmt_data}
+
+    # Get all classes for this session
+    all_classes = sorted({s["Class"] for s in students_data if get_session(s["Class"]) == session})
+
+    # Students per class
+    class_students = {}
+    for s in students_data:
+        cls = s["Class"]
+        if get_session(cls) == session:
+            class_students.setdefault(cls, []).append(s["Name"])
+
+    # Parse attendance for today
+    recorded_classes = {}  # class -> {present, absent, total, absent_names, time}
+    if records:
+        df = pd.DataFrame(records)
+        df.columns = [c.upper() for c in df.columns]
+        daily = df[df["DATE"].astype(str).str.contains(date_str)].copy()
+
+        for cls in all_classes:
+            cdf = daily[daily["CLASS"] == cls]
+            if not cdf.empty:
+                total = len(cdf)
+                absent_count = int((cdf["STATUS"] == STATUS_ABSENT).sum())
+                present_count = total - absent_count
+                absent_names = []
+                for _, row in cdf[cdf["STATUS"] == STATUS_ABSENT].iterrows():
+                    name = row["NAME"]
+                    rmt_tag = " [RMT]" if str(name).strip().upper() in rmt_set else ""
+                    absent_names.append(f"{name}{rmt_tag}")
+                try:
+                    time_str = str(cdf["DATE"].iloc[0]).split(" ")[1]
+                except Exception:
+                    time_str = ""
+                recorded_classes[cls] = {
+                    "present": present_count,
+                    "total": total,
+                    "absent": absent_count,
+                    "absent_names": absent_names,
+                    "time": time_str,
+                }
+
+    pending_classes = [cls for cls in all_classes if cls not in recorded_classes]
+
+    # Build message
+    pretty_date = format_malay_date(date_str)
+    session_label = "PAGI" if session == "Pagi" else "PETANG"
+
+    lines = [
+        f"<b>LAPORAN KEHADIRAN - SESI {session_label}</b>",
+        f"Tarikh: {pretty_date}",
+        "─" * 28,
+    ]
+
+    if recorded_classes:
+        lines.append("")
+        lines.append("<b>TELAH DIREKOD:</b>")
+        total_present = 0
+        total_students = 0
+        for cls in all_classes:
+            if cls in recorded_classes:
+                info = recorded_classes[cls]
+                total_present += info["present"]
+                total_students += info["total"]
+                absent_str = ", ".join(info["absent_names"]) if info["absent_names"] else "-"
+                lines.append(f"{cls} - ({info['present']}/{info['total']}) - TH: {absent_str}")
+
+    if pending_classes:
+        lines.append("")
+        lines.append("<b>BELUM DIREKOD:</b>")
+        for cls in pending_classes:
+            count = len(class_students.get(cls, []))
+            lines.append(f"{cls} ({count} murid)")
+
+    lines.append("")
+    lines.append("─" * 28)
+
+    # Totals
+    if recorded_classes:
+        total_p = sum(r["present"] for r in recorded_classes.values())
+        total_s = sum(r["total"] for r in recorded_classes.values())
+        rate = round(total_p / total_s * 100, 1) if total_s else 0
+        lines.append(f"Jumlah Hadir: {total_p}/{total_s} ({rate}%)")
+        lines.append(f"Kelas Direkod: {len(recorded_classes)}/{len(all_classes)}")
+    else:
+        lines.append("Tiada kelas yang direkod lagi.")
+
+    # Compliment / reminder
+    lines.append("")
+    if is_scheduled:
+        if recorded_classes:
+            lines.append("Tahniah kepada guru kelas yang telah merekod kehadiran!")
+        if pending_classes:
+            lines.append("Sila rekod kehadiran bagi kelas yang belum direkod.")
+    else:
+        if pending_classes:
+            remaining = len(pending_classes)
+            lines.append(f"Menunggu {remaining} lagi kelas untuk direkod.")
+
+    return "\n".join(lines)
+
+
+def send_session_update(date_str: str, session: str, is_scheduled: bool = False):
+    """Build summary, delete old message, send new one to the correct group."""
+    chat_id = get_chat_id_for_session(session)
+    if not chat_id:
+        return
+
+    msg_key = f"{session}:{date_str}"
+    text = build_session_summary(date_str, session, is_scheduled=is_scheduled)
+
+    # Delete old message if exists
+    old = _telegram_msg_ids.get(msg_key, {})
+    if chat_id in old:
+        telegram_delete(chat_id, old[chat_id])
+
+    # Send new message
+    msg_id = telegram_send(chat_id, text)
+    if msg_id:
+        _telegram_msg_ids.setdefault(msg_key, {})[chat_id] = msg_id
+
+
+# ---------------------------------------------------------------------------
+# Scheduled summary jobs
+# ---------------------------------------------------------------------------
+def scheduled_pagi_summary():
+    """Post final Pagi summary at 10:00 AM."""
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    invalidate_cache()  # fresh data
+    send_session_update(today, "Pagi", is_scheduled=True)
+
+
+def scheduled_petang_summary():
+    """Post final Petang summary at 3:00 PM."""
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    invalidate_cache()  # fresh data
+    send_session_update(today, "Petang", is_scheduled=True)
+
+
+scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
+scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
+scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
+scheduler.start()
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +483,13 @@ def api_submit_attendance():
         )
 
         invalidate_cache(SHEET_ATTENDANCE)
+
+        # Send Telegram update for this session
+        session = get_session(target_class)
+        try:
+            send_session_update(target_date, session)
+        except Exception as e:
+            log.warning("Telegram update failed: %s", e)
 
         return jsonify({
             "success": True,
@@ -601,6 +833,50 @@ def api_export(date_str: str, class_name: str | None = None):
         )
     except Exception as e:
         return Response(str(e), status=500)
+
+
+# ---------------------------------------------------------------------------
+# API: Telegram — get recent chat IDs (helper for setup)
+# ---------------------------------------------------------------------------
+@app.route("/api/telegram/updates")
+def api_telegram_updates():
+    """Fetch recent bot updates to find group chat IDs."""
+    if not TELEGRAM_TOKEN:
+        return jsonify({"error": "TELEGRAM_BOT_TOKEN not set"}), 500
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+        resp = http_requests.get(url, timeout=10)
+        data = resp.json()
+        if not data.get("ok"):
+            return jsonify({"error": "Failed to get updates", "detail": data}), 500
+
+        chats = {}
+        for update in data.get("result", []):
+            msg = update.get("message") or update.get("my_chat_member", {}).get("chat")
+            if msg:
+                chat = msg.get("chat") or msg
+                chat_id = chat.get("id")
+                title = chat.get("title", chat.get("first_name", "Unknown"))
+                chat_type = chat.get("type", "unknown")
+                if chat_id:
+                    chats[str(chat_id)] = {"id": chat_id, "title": title, "type": chat_type}
+
+        return jsonify({"chats": list(chats.values())})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/telegram/test")
+def api_telegram_test():
+    """Send a test message to both groups."""
+    results = {}
+    for label, chat_id in [("Pagi", TELEGRAM_CHAT_PAGI), ("Petang", TELEGRAM_CHAT_PETANG)]:
+        if chat_id:
+            msg_id = telegram_send(chat_id, f"Bot Hadir@SKBT berjaya disambung ke kumpulan Sesi {label}!")
+            results[label] = {"chat_id": chat_id, "sent": msg_id is not None, "message_id": msg_id}
+        else:
+            results[label] = {"chat_id": "", "sent": False, "error": f"TELEGRAM_CHAT_{label.upper()} not set"}
+    return jsonify(results)
 
 
 # ---------------------------------------------------------------------------
