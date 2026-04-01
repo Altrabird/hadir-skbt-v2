@@ -258,8 +258,11 @@ def build_session_summary(date_str: str, session: str, is_scheduled: bool = Fals
                 info = recorded_classes[cls]
                 total_present += info["present"]
                 total_students += info["total"]
-                absent_str = ", ".join(info["absent_names"]) if info["absent_names"] else "-"
-                lines.append(f"{cls} - ({info['present']}/{info['total']}) - TH: {absent_str}")
+                if info["absent"] == 0:
+                    lines.append(f"{cls} - ({info['present']}/{info['total']}) - 100%")
+                else:
+                    absent_str = ", ".join(info["absent_names"])
+                    lines.append(f"{cls} - ({info['present']}/{info['total']}) - TH: {absent_str}")
 
     if pending_classes:
         lines.append("")
