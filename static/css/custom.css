@@ -79,6 +79,19 @@
 #student-list::-webkit-scrollbar-track { background: transparent; }
 #student-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
 
+#tab-content-rmt::-webkit-scrollbar { width: 3px; }
+#tab-content-rmt::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+
+/* RMT Daily Grid */
+.rmt-daily-grid { overflow-x: auto; }
+.rmt-daily-grid table { border-collapse: collapse; }
+.rmt-cell { min-width: 26px; height: 22px; text-align: center; font-size: 0.55rem; font-weight: 700; padding: 2px; border: 1px solid #e5e7eb; }
+.rmt-cell.hadir { background: #d1fae5; color: #059669; }
+.rmt-cell.tidak-hadir { background: #fee2e2; color: #dc2626; }
+.rmt-cell.no-data { background: #f3f4f6; color: #9ca3af; }
+.rmt-daily-grid::-webkit-scrollbar { height: 3px; }
+.rmt-daily-grid::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+
 /* Table */
 table tbody tr { transition: background 0.1s; }
 table tbody tr:hover { background: #f8fafc; }

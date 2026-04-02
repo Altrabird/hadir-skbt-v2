@@ -365,21 +365,27 @@ async function loadSidebarData() {
 }
 
 function switchSidebarTab(tab) {
-    const studentTab = document.getElementById("tab-student");
-    const classTab = document.getElementById("tab-class");
-    const studentContent = document.getElementById("tab-content-student");
-    const classContent = document.getElementById("tab-content-class");
+    const tabs = ["student", "class", "rmt"];
+    tabs.forEach(t => {
+        const btn = document.getElementById(`tab-${t}`);
+        const content = document.getElementById(`tab-content-${t}`);
+        if (t === tab) {
+            btn.classList.add("active");
+            content.classList.remove("hidden");
+        } else {
+            btn.classList.remove("active");
+            content.classList.add("hidden");
+        }
+    });
 
-    if (tab === "student") {
-        studentTab.classList.add("active");
-        classTab.classList.remove("active");
-        studentContent.classList.remove("hidden");
-        classContent.classList.add("hidden");
-    } else {
-        classTab.classList.add("active");
-        studentTab.classList.remove("active");
-        classContent.classList.remove("hidden");
-        studentContent.classList.add("hidden");
+    // Init RMT month picker on first open
+    if (tab === "rmt") {
+        const picker = document.getElementById("rmt-month-picker");
+        if (!picker.value) {
+            const now = new Date();
+            picker.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+            loadRmtSummary();
+        }
     }
 }
 
@@ -603,6 +609,151 @@ async function loadClassSummary() {
     } catch {
         container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data.</p>`;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar: RMT Tab
+// ---------------------------------------------------------------------------
+async function loadRmtSummary() {
+    const month = document.getElementById("rmt-month-picker").value;
+    const container = document.getElementById("rmt-summary-content");
+    const dlSection = document.getElementById("rmt-download-section");
+
+    if (!month) {
+        container.innerHTML = `<div class="text-center py-8"><i class="fa-solid fa-bowl-rice text-3xl text-gray-200"></i><p class="text-xs text-gray-400 mt-2">Pilih bulan untuk melihat laporan RMT.</p></div>`;
+        dlSection.classList.add("hidden");
+        return;
+    }
+
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-orange-200 border-t-orange-600 rounded-full animate-spin mx-auto"></div></div>`;
+
+    try {
+        const res = await apiFetch(`/api/summary/rmt/${month}`);
+        const d = await res.json();
+
+        // Populate export class dropdown
+        const exportSelect = document.getElementById("rmt-export-class");
+        exportSelect.innerHTML = '<option value="">Semua Kelas</option>';
+        d.classes.forEach(cls => {
+            exportSelect.innerHTML += `<option value="${escapeHtml(cls.class)}">${escapeHtml(cls.class)}</option>`;
+        });
+        dlSection.classList.remove("hidden");
+
+        const months = ["","Januari","Februari","Mac","April","Mei","Jun","Julai","Ogos","September","Oktober","November","Disember"];
+        const monthLabel = `${months[d.month_num]} ${d.year}`;
+        const rateColor = d.totals.avg_rate >= 90 ? "emerald" : d.totals.avg_rate >= 75 ? "amber" : "red";
+
+        let html = `
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl p-3 text-white">
+                <div class="flex items-center gap-2 mb-0.5">
+                    <i class="fa-solid fa-bowl-rice text-sm text-orange-200"></i>
+                    <span class="text-xs font-bold">Laporan RMT Bulanan</span>
+                </div>
+                <span class="text-[10px] text-orange-100">${monthLabel}</span>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-1.5">
+                <div class="bg-orange-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-orange-600">${d.totals.total_rmt}</p>
+                    <p class="text-[9px] font-bold text-orange-500">Jumlah Murid RMT</p>
+                </div>
+                <div class="bg-${rateColor}-50 rounded-lg p-2 text-center">
+                    <p class="text-lg font-black text-${rateColor}-600">${d.totals.avg_rate}%</p>
+                    <p class="text-[9px] font-bold text-${rateColor}-500">Purata Kehadiran</p>
+                </div>
+            </div>
+        `;
+
+        // Per-class sections
+        d.classes.forEach(cls => {
+            const sessionIcon = cls.session === "Pagi" ? "fa-sun" : "fa-moon";
+            const sessionColor = cls.session === "Pagi" ? "amber" : "indigo";
+
+            let studentRows = "";
+            cls.students.forEach((s, i) => {
+                const sColor = s.rate >= 90 ? "emerald" : s.rate >= 75 ? "amber" : "red";
+                studentRows += `
+                    <div class="summary-student-row">
+                        <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                            <span class="w-4 text-[9px] text-gray-400 text-right">${i + 1}</span>
+                            <span class="font-semibold text-gray-700 truncate">${escapeHtml(s.name)}</span>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                            <span class="text-emerald-600 font-bold w-5 text-right">${s.present}</span>
+                            <span class="text-red-500 font-bold w-5 text-right">${s.absent}</span>
+                            <span class="font-black text-${sColor}-600 w-10 text-right">${s.rate}%</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Daily grid
+            let dayHeaders = "";
+            d.school_days.forEach(day => {
+                dayHeaders += `<th class="rmt-cell text-gray-500">${parseInt(day.split("-")[2])}</th>`;
+            });
+
+            let dailyRows = "";
+            cls.students.forEach(s => {
+                let cells = "";
+                s.daily.forEach(day => {
+                    const cellClass = day.status === "H" ? "hadir" : day.status === "TH" ? "tidak-hadir" : "no-data";
+                    cells += `<td class="rmt-cell ${cellClass}">${day.status}</td>`;
+                });
+                dailyRows += `<tr><td class="px-1 py-0.5 text-[9px] font-semibold text-gray-700 whitespace-nowrap sticky left-0 bg-white">${escapeHtml(s.name)}</td>${cells}</tr>`;
+            });
+
+            html += `
+                <div class="border border-gray-200 rounded-xl overflow-hidden">
+                    <div class="bg-${sessionColor}-50 px-3 py-2 flex items-center gap-1.5">
+                        <i class="fa-solid ${sessionIcon} text-[10px] text-${sessionColor}-500"></i>
+                        <span class="text-xs font-bold text-gray-800">${escapeHtml(cls.class)}</span>
+                        <span class="text-[9px] text-gray-400">(${cls.students.length} murid RMT)</span>
+                    </div>
+
+                    <!-- Summary -->
+                    <div class="px-3 py-1.5">
+                        <div class="flex items-center justify-between mb-1 text-[8px] font-bold text-gray-400 uppercase">
+                            <span>Nama</span>
+                            <div class="flex gap-2"><span class="text-emerald-500">H</span><span class="text-red-500">TH</span><span>%</span></div>
+                        </div>
+                        <div class="max-h-[200px] overflow-y-auto rounded border border-gray-100">
+                            ${studentRows}
+                        </div>
+                    </div>
+
+                    <!-- Daily grid -->
+                    <div class="px-3 pb-2">
+                        <p class="text-[8px] font-bold text-gray-400 uppercase mb-1">Kehadiran Harian</p>
+                        <div class="rmt-daily-grid rounded border border-gray-100">
+                            <table class="text-[9px]">
+                                <thead><tr><th class="rmt-cell sticky left-0 bg-gray-50 text-gray-500">Nama</th>${dayHeaders}</tr></thead>
+                                <tbody>${dailyRows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+
+        if (d.classes.length === 0) {
+            html += `<div class="text-center py-4"><p class="text-xs text-gray-400">Tiada data RMT untuk bulan ini.</p></div>`;
+        }
+
+        container.innerHTML = html;
+    } catch {
+        container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data.</p>`;
+    }
+}
+
+function downloadRmtExcel() {
+    const month = document.getElementById("rmt-month-picker").value;
+    if (!month) return;
+    const cls = document.getElementById("rmt-export-class").value;
+    const url = cls ? `/api/export/rmt/${month}/${encodeURIComponent(cls)}` : `/api/export/rmt/${month}`;
+    window.location.href = url;
 }
 
 // ---------------------------------------------------------------------------

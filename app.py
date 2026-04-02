@@ -5,6 +5,7 @@ Flask backend with Google Sheets integration.
 
 import io
 import datetime
+import calendar
 import logging
 from zoneinfo import ZoneInfo
 from functools import lru_cache
@@ -1046,6 +1047,194 @@ def api_export(date_str: str, class_name: str | None = None):
             buf.getvalue(),
             mimetype="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        return Response(str(e), status=500)
+
+
+# ---------------------------------------------------------------------------
+# API: Monthly RMT Summary
+# ---------------------------------------------------------------------------
+def build_rmt_monthly_data(year_month: str) -> dict:
+    """Build monthly RMT attendance data for all classes.
+    year_month format: '2026-03'
+    """
+    year, month = int(year_month[:4]), int(year_month[5:7])
+
+    students_data = get_data_from_sheet(SHEET_STUDENTS)
+    rmt_data = get_data_from_sheet(SHEET_RMT)
+    records = get_data_from_sheet(SHEET_ATTENDANCE)
+    rmt_set = {str(r["NAME"]).strip().upper() for r in rmt_data}
+
+    # Build list of RMT students with their class and session
+    rmt_students = []
+    for s in students_data:
+        if str(s["Name"]).strip().upper() in rmt_set:
+            rmt_students.append({
+                "name": s["Name"],
+                "class": s["Class"],
+                "session": get_session(s["Class"]),
+            })
+
+    # Get school days (weekdays) in the month
+    today = datetime.datetime.now(tz=TIMEZONE)
+    _, days_in_month = calendar.monthrange(year, month)
+    school_days = []
+    for day in range(1, days_in_month + 1):
+        dt = datetime.date(year, month, day)
+        if dt.weekday() < 5:  # Mon-Fri
+            if year == today.year and month == today.month and day > today.day:
+                break  # Don't include future dates
+            school_days.append(dt.strftime("%Y-%m-%d"))
+
+    # Parse attendance for the month
+    attendance_map = {}  # {(name, date): status}
+    recorded_class_dates = set()  # {(class, date)} — tracks which classes have data per day
+    if records:
+        df = pd.DataFrame(records)
+        df.columns = [c.upper() for c in df.columns]
+        df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+        monthly = df[df["DATE_ONLY"].str.startswith(year_month)].copy()
+        # Deduplicate: keep last entry per student per date
+        monthly = monthly.drop_duplicates(subset=["NAME", "DATE_ONLY"], keep="last")
+        for _, row in monthly.iterrows():
+            attendance_map[(row["NAME"], row["DATE_ONLY"])] = row["STATUS"]
+            recorded_class_dates.add((row["CLASS"], row["DATE_ONLY"]))
+
+    # Build per-class, per-student data
+    classes_data = {}
+    for student in rmt_students:
+        cls = student["class"]
+        name = student["name"]
+        if cls not in classes_data:
+            classes_data[cls] = {
+                "class": cls,
+                "session": student["session"],
+                "students": [],
+            }
+
+        daily = []
+        present = 0
+        absent = 0
+        total_days = 0
+        for d in school_days:
+            if (cls, d) in recorded_class_dates:
+                total_days += 1
+                status = attendance_map.get((name, d), STATUS_ABSENT)
+                if status == STATUS_PRESENT:
+                    present += 1
+                    daily.append({"date": d, "status": "H"})
+                else:
+                    absent += 1
+                    daily.append({"date": d, "status": "TH"})
+            else:
+                daily.append({"date": d, "status": "-"})
+
+        rate = round(present / total_days * 100, 1) if total_days > 0 else 0
+        classes_data[cls]["students"].append({
+            "name": name,
+            "present": present,
+            "absent": absent,
+            "total_days": total_days,
+            "rate": rate,
+            "daily": daily,
+        })
+
+    # Sort classes and compute totals
+    classes_list = sorted(classes_data.values(), key=lambda c: c["class"])
+    all_rates = []
+    total_rmt = 0
+    for cls in classes_list:
+        cls["students"].sort(key=lambda s: s["rate"])
+        total_rmt += len(cls["students"])
+        for s in cls["students"]:
+            if s["total_days"] > 0:
+                all_rates.append(s["rate"])
+
+    avg_rate = round(sum(all_rates) / len(all_rates), 1) if all_rates else 0
+
+    return {
+        "month": year_month,
+        "year": year,
+        "month_num": month,
+        "classes": classes_list,
+        "school_days": school_days,
+        "totals": {
+            "total_rmt": total_rmt,
+            "avg_rate": avg_rate,
+        },
+    }
+
+
+@app.route("/api/summary/rmt/<year_month>")
+def api_summary_rmt(year_month: str):
+    """Return monthly RMT attendance summary."""
+    try:
+        data = build_rmt_monthly_data(year_month)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/rmt/<year_month>")
+@app.route("/api/export/rmt/<year_month>/<class_name>")
+def api_export_rmt(year_month: str, class_name: str | None = None):
+    """Download Excel file of monthly RMT attendance."""
+    try:
+        data = build_rmt_monthly_data(year_month)
+        classes = data["classes"]
+        school_days = data["school_days"]
+        short_days = [d[5:] for d in school_days]  # MM-DD format for column headers
+
+        if class_name:
+            classes = [c for c in classes if c["class"] == class_name]
+
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+            # Ringkasan (Summary) sheet
+            summary_rows = []
+            bil = 0
+            for cls in classes:
+                for s in cls["students"]:
+                    bil += 1
+                    summary_rows.append({
+                        "Bil": bil,
+                        "Nama": s["name"],
+                        "Kelas": cls["class"],
+                        "Sesi": cls["session"],
+                        "Hari Rekod": s["total_days"],
+                        "Hadir": s["present"],
+                        "Tidak Hadir": s["absent"],
+                        "Kadar (%)": s["rate"],
+                    })
+
+            if summary_rows:
+                df_summary = pd.DataFrame(summary_rows)
+                df_summary.to_excel(writer, sheet_name="Ringkasan", index=False)
+
+            # Per-class daily detail sheets
+            for cls in classes:
+                sheet_name = cls["class"][:28]  # Excel 31 char limit
+                rows = []
+                for i, s in enumerate(cls["students"], 1):
+                    row = {"Bil": i, "Nama": s["name"]}
+                    for j, d in enumerate(s["daily"]):
+                        row[short_days[j]] = d["status"]
+                    row["Hadir"] = s["present"]
+                    row["T/Hadir"] = s["absent"]
+                    row["Kadar (%)"] = s["rate"]
+                    rows.append(row)
+
+                if rows:
+                    df_detail = pd.DataFrame(rows)
+                    df_detail.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        buf.seek(0)
+        fname = f"RMT_{class_name or 'Semua'}_{year_month}.xlsx"
+        return Response(
+            buf.getvalue(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
     except Exception as e:
         return Response(str(e), status=500)
