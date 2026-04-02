@@ -433,6 +433,12 @@ def telegram_webhook():
         today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
         parts = text.split()
 
+        # Show chat ID for setup
+        if len(parts) >= 2 and parts[1] == "chatid":
+            chat_title = msg.get("chat", {}).get("title", "Private")
+            telegram_send(chat_id, f"Chat ID: <code>{chat_id}</code>\nNama: {chat_title}\n\nGunakan ID ini untuk setting .env di VPS.")
+            return "ok", 200
+
         # Notification control commands
         if len(parts) >= 2 and parts[1] == "notifikasi":
             settings = load_bot_settings()
