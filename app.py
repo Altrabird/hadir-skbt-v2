@@ -1055,6 +1055,16 @@ def api_export(date_str: str, class_name: str | None = None):
 # ---------------------------------------------------------------------------
 # API: Monthly RMT Summary
 # ---------------------------------------------------------------------------
+def _get_col(row: dict, *candidates: str) -> str:
+    """Get value from dict trying multiple key names (case-insensitive)."""
+    lower_map = {k.lower(): k for k in row}
+    for c in candidates:
+        real_key = lower_map.get(c.lower())
+        if real_key is not None:
+            return str(row[real_key]).strip()
+    return ""
+
+
 def build_rmt_monthly_data(year_month: str) -> dict:
     """Build monthly RMT attendance data for all classes.
     year_month format: '2026-03'
@@ -1064,16 +1074,24 @@ def build_rmt_monthly_data(year_month: str) -> dict:
     students_data = get_data_from_sheet(SHEET_STUDENTS)
     rmt_data = get_data_from_sheet(SHEET_RMT)
     records = get_data_from_sheet(SHEET_ATTENDANCE)
-    rmt_set = {str(r["NAME"]).strip().upper() for r in rmt_data}
+
+    # Build RMT name set — case-insensitive, handle any column name
+    rmt_set = set()
+    for r in rmt_data:
+        name = _get_col(r, "NAME", "Name", "name", "Nama")
+        if name:
+            rmt_set.add(name.upper())
 
     # Build list of RMT students with their class and session
     rmt_students = []
     for s in students_data:
-        if str(s["Name"]).strip().upper() in rmt_set:
+        sname = _get_col(s, "Name", "NAME", "name", "Nama")
+        sclass = _get_col(s, "Class", "CLASS", "class", "Kelas")
+        if sname.upper() in rmt_set:
             rmt_students.append({
-                "name": s["Name"],
-                "class": s["Class"],
-                "session": get_session(s["Class"]),
+                "name": sname,
+                "class": sclass,
+                "session": get_session(sclass),
             })
 
     # Get school days (weekdays) in the month
@@ -1087,25 +1105,29 @@ def build_rmt_monthly_data(year_month: str) -> dict:
                 break  # Don't include future dates
             school_days.append(dt.strftime("%Y-%m-%d"))
 
-    # Parse attendance for the month
-    attendance_map = {}  # {(name, date): status}
-    recorded_class_dates = set()  # {(class, date)} — tracks which classes have data per day
+    # Parse attendance for the month — use UPPER keys for case-insensitive matching
+    attendance_map = {}  # {(NAME_UPPER, date): status}
+    recorded_class_dates = set()  # {(class_upper, date)}
     if records:
         df = pd.DataFrame(records)
         df.columns = [c.upper() for c in df.columns]
         df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
         monthly = df[df["DATE_ONLY"].str.startswith(year_month)].copy()
+        monthly["NAME_UPPER"] = monthly["NAME"].astype(str).str.strip().str.upper()
+        monthly["CLASS_UPPER"] = monthly["CLASS"].astype(str).str.strip().str.upper()
         # Deduplicate: keep last entry per student per date
-        monthly = monthly.drop_duplicates(subset=["NAME", "DATE_ONLY"], keep="last")
+        monthly = monthly.drop_duplicates(subset=["NAME_UPPER", "DATE_ONLY"], keep="last")
         for _, row in monthly.iterrows():
-            attendance_map[(row["NAME"], row["DATE_ONLY"])] = row["STATUS"]
-            recorded_class_dates.add((row["CLASS"], row["DATE_ONLY"]))
+            attendance_map[(row["NAME_UPPER"], row["DATE_ONLY"])] = row["STATUS"]
+            recorded_class_dates.add((row["CLASS_UPPER"], row["DATE_ONLY"]))
 
     # Build per-class, per-student data
     classes_data = {}
     for student in rmt_students:
         cls = student["class"]
+        cls_upper = cls.upper()
         name = student["name"]
+        name_upper = name.upper()
         if cls not in classes_data:
             classes_data[cls] = {
                 "class": cls,
@@ -1118,9 +1140,9 @@ def build_rmt_monthly_data(year_month: str) -> dict:
         absent = 0
         total_days = 0
         for d in school_days:
-            if (cls, d) in recorded_class_dates:
+            if (cls_upper, d) in recorded_class_dates:
                 total_days += 1
-                status = attendance_map.get((name, d), STATUS_ABSENT)
+                status = attendance_map.get((name_upper, d), STATUS_ABSENT)
                 if status == STATUS_PRESENT:
                     present += 1
                     daily.append({"date": d, "status": "H"})
@@ -1171,8 +1193,12 @@ def api_summary_rmt(year_month: str):
     """Return monthly RMT attendance summary."""
     try:
         data = build_rmt_monthly_data(year_month)
+        logging.info("RMT summary %s: %d classes, %d students, %d school_days",
+                      year_month, len(data["classes"]), data["totals"]["total_rmt"],
+                      len(data["school_days"]))
         return jsonify(data)
     except Exception as e:
+        logging.exception("RMT summary error for %s", year_month)
         return jsonify({"error": str(e)}), 500
 
 
@@ -1237,6 +1263,7 @@ def api_export_rmt(year_month: str, class_name: str | None = None):
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
     except Exception as e:
+        logging.exception("RMT export error for %s / %s", year_month, class_name)
         return Response(str(e), status=500)
 
 

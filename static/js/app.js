@@ -743,8 +743,9 @@ async function loadRmtSummary() {
         }
 
         container.innerHTML = html;
-    } catch {
-        container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data.</p>`;
+    } catch (err) {
+        console.error("RMT load error:", err);
+        container.innerHTML = `<p class="text-xs text-red-500 text-center py-4">Gagal memuatkan data RMT: ${escapeHtml(err.message)}</p>`;
     }
 }
 
