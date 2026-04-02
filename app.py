@@ -398,13 +398,21 @@ def scheduled_petang_summary():
         telegram_send(admin_id, "Laporan Sesi Petang telah dihantar ke group.")
 
 
-scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
-# Only schedule Petang (3pm) — Pagi group has no bot admin access
-if TELEGRAM_CHAT_PETANG:
-    scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
-if TELEGRAM_CHAT_PAGI:
-    scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
-scheduler.start()
+_scheduler_started = False
+
+
+def start_scheduler():
+    """Start scheduler only once (avoid duplicate in Gunicorn workers)."""
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    _scheduler_started = True
+    scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
+    if TELEGRAM_CHAT_PETANG:
+        scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
+    if TELEGRAM_CHAT_PAGI:
+        scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
+    scheduler.start()
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +529,25 @@ def setup_telegram_webhook():
         log.warning("Webhook setup error: %s", e)
 
 
-# Register webhook on startup
-setup_telegram_webhook()
+_webhook_set = False
+
+
+def init_telegram():
+    """Initialize Telegram webhook and scheduler (called once)."""
+    global _webhook_set
+    if _webhook_set:
+        return
+    _webhook_set = True
+    setup_telegram_webhook()
+    start_scheduler()
+
+
+# ---------------------------------------------------------------------------
+# Initialize Telegram on first request (avoids issues with Gunicorn workers)
+# ---------------------------------------------------------------------------
+@app.before_request
+def before_first_request():
+    init_telegram()
 
 
 # ---------------------------------------------------------------------------
