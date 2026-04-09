@@ -371,6 +371,48 @@ def send_session_update(date_str: str, session: str, is_scheduled: bool = False)
 
 
 # ---------------------------------------------------------------------------
+# Scheduled morning reminder jobs
+# ---------------------------------------------------------------------------
+def build_morning_reminder(session: str) -> str:
+    """Build the morning reminder text for a session."""
+    today = datetime.datetime.now(tz=TIMEZONE)
+    date_str = f"{today.day:02d} {MALAY_MONTHS[today.month]} {today.year}"
+    day_name = MALAY_DAYS.get(today.strftime("%A"), today.strftime("%A"))
+    session_label = "Sesi Pagi" if session == "Pagi" else "Sesi Petang"
+    return (
+        "📢 PEMAKLUMAN KEHADIRAN MURID\n\n"
+        "Assalamualaikum dan selamat pagi.\n"
+        f"Dimaklumkan bahawa guru waktu pertama {session_label} diminta untuk "
+        "mengambil dan mengisi kehadiran murid pada hari ini seperti ketetapan berikut:\n"
+        f"📆 Tarikh: {date_str}\n"
+        f"🌤 Hari: {day_name}\n"
+        "🔗 Sila gunakan pautan berikut untuk merekod kehadiran:\n\n"
+        "👉 https://idme.moe.gov.my/login\n"
+        "👉 https://hadirskbt.altrabird.click/\n\n"
+        "Kerjasama semua guru amat dihargai bagi memastikan rekod kehadiran "
+        "murid adalah tepat dan terkini.\nSekian, terima kasih."
+    )
+
+
+def scheduled_pagi_reminder():
+    """Post morning reminder to Pagi group at 6:30 AM."""
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    if not is_school_day(today) or not is_notifikasi_on():
+        return
+    if TELEGRAM_CHAT_PAGI:
+        telegram_send(TELEGRAM_CHAT_PAGI, build_morning_reminder("Pagi"))
+
+
+def scheduled_petang_reminder():
+    """Post morning reminder to Petang group at 11:45 AM."""
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    if not is_school_day(today) or not is_notifikasi_on():
+        return
+    if TELEGRAM_CHAT_PETANG:
+        telegram_send(TELEGRAM_CHAT_PETANG, build_morning_reminder("Petang"))
+
+
+# ---------------------------------------------------------------------------
 # Scheduled summary jobs
 # ---------------------------------------------------------------------------
 def scheduled_pagi_summary():
@@ -411,8 +453,10 @@ def start_scheduler():
     scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
     if TELEGRAM_CHAT_PETANG:
         scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
+        scheduler.add_job(scheduled_petang_reminder, "cron", hour=11, minute=45, id="petang_reminder")
     if TELEGRAM_CHAT_PAGI:
         scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
+        scheduler.add_job(scheduled_pagi_reminder, "cron", hour=6, minute=30, id="pagi_reminder")
     scheduler.start()
 
 
