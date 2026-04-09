@@ -1442,6 +1442,40 @@ def api_telegram_send(secret: str, session: str | None = None):
     return jsonify({"success": True, "date": today, "results": results})
 
 
+@app.route("/api/telegram/reminder/<secret>")
+@app.route("/api/telegram/reminder/<secret>/<session>")
+def api_telegram_reminder(secret: str, session: str | None = None):
+    """Manually trigger morning reminder to Telegram group(s).
+    Usage:
+        /api/telegram/reminder/skbt2026          → kedua-dua sesi
+        /api/telegram/reminder/skbt2026/pagi     → sesi pagi sahaja
+        /api/telegram/reminder/skbt2026/petang   → sesi petang sahaja
+    """
+    if secret != TELEGRAM_SECRET:
+        return jsonify({"error": "Kod rahsia salah"}), 403
+
+    results = {}
+    sessions_to_send = []
+    if session:
+        s = session.capitalize()
+        if s in ("Pagi", "Petang"):
+            sessions_to_send = [s]
+        else:
+            return jsonify({"error": "Session mesti 'pagi' atau 'petang'"}), 400
+    else:
+        sessions_to_send = ["Pagi", "Petang"]
+
+    for s in sessions_to_send:
+        chat_id = TELEGRAM_CHAT_PAGI if s == "Pagi" else TELEGRAM_CHAT_PETANG
+        if chat_id:
+            msg_id = telegram_send(chat_id, build_morning_reminder(s))
+            results[s] = {"sent": msg_id is not None, "chat_id": chat_id, "message_id": msg_id}
+        else:
+            results[s] = {"sent": False, "error": "Chat ID not configured"}
+
+    return jsonify({"success": True, "results": results})
+
+
 @app.route("/api/telegram/test")
 def api_telegram_test():
     """Send a test message to both groups."""
