@@ -7,6 +7,7 @@ import io
 import datetime
 import calendar
 import logging
+import threading
 from zoneinfo import ZoneInfo
 from functools import lru_cache
 
@@ -676,6 +677,9 @@ def api_attendance(date_str: str, class_name: str | None = None):
 # ---------------------------------------------------------------------------
 # API: Submit attendance
 # ---------------------------------------------------------------------------
+_submit_lock = threading.Lock()
+
+
 @app.route("/api/attendance", methods=["POST"])
 def api_submit_attendance():
     """Submit attendance for a class. Expects JSON:
@@ -687,6 +691,7 @@ def api_submit_attendance():
             {"name": "ABU", "status": "Absent"}
         ]
     }
+    Uses lock + targeted row deletion to prevent race conditions.
     """
     try:
         payload = request.get_json()
@@ -700,46 +705,44 @@ def api_submit_attendance():
         now = datetime.datetime.now(tz=TIMEZONE)
         timestamp = f"{target_date} {now.strftime('%H:%M:%S')}"
 
-        client = get_spreadsheet_client()
-        spreadsheet = client.open_by_url(SPREADSHEET_URL)
-        attendance_sheet = spreadsheet.sheet1
-
-        # 1. Read all existing data
-        all_records = attendance_sheet.get_all_records()
-        df_all = pd.DataFrame(all_records)
-
-        if not df_all.empty:
-            df_all.columns = [c.upper() for c in df_all.columns]
-            condition = (
-                df_all["DATE"].astype(str).str.contains(target_date)
-            ) & (df_all["CLASS"] == target_class)
-            df_clean = df_all[~condition].copy()
-        else:
-            df_clean = pd.DataFrame(columns=["DATE", "NAME", "CLASS", "STATUS"])
-
-        # 2. Build new rows
+        # Build new rows first (outside lock)
         new_rows = []
         absent_count = 0
         for s in student_list:
             status = s["status"]
             if status == STATUS_ABSENT:
                 absent_count += 1
-            new_rows.append({
-                "DATE": timestamp,
-                "NAME": s["name"],
-                "CLASS": target_class,
-                "STATUS": status,
-            })
+            new_rows.append([timestamp, s["name"], target_class, status])
 
-        df_new = pd.DataFrame(new_rows)
-        df_final = pd.concat([df_clean, df_new], ignore_index=True)
-        df_final = df_final[["DATE", "NAME", "CLASS", "STATUS"]]
+        # Lock to prevent concurrent read-delete-write race condition
+        with _submit_lock:
+            client = get_spreadsheet_client()
+            spreadsheet = client.open_by_url(SPREADSHEET_URL)
+            attendance_sheet = spreadsheet.sheet1
 
-        # 3. Write back
-        attendance_sheet.clear()
-        attendance_sheet.update(
-            [df_final.columns.values.tolist()] + df_final.values.tolist()
-        )
+            # 1. Read all cell values (row 1 = header)
+            all_values = attendance_sheet.get_all_values()
+            if not all_values:
+                attendance_sheet.update("A1", [["DATE", "NAME", "CLASS", "STATUS"]])
+                all_values = [["DATE", "NAME", "CLASS", "STATUS"]]
+
+            header = all_values[0]
+
+            # 2. Find rows to delete (matching date AND class) — use exact match
+            rows_to_delete = []
+            for i, row in enumerate(all_values[1:], start=2):  # 1-indexed, skip header
+                if len(row) >= 4:
+                    row_date = str(row[0])[:10]   # Extract YYYY-MM-DD from "YYYY-MM-DD HH:MM:SS"
+                    row_class = str(row[2])
+                    if row_date == target_date and row_class == target_class:
+                        rows_to_delete.append(i)
+
+            # 3. Delete old rows in reverse order (bottom-up to preserve indices)
+            for row_idx in reversed(rows_to_delete):
+                attendance_sheet.delete_rows(row_idx)
+
+            # 4. Append new rows at the end
+            attendance_sheet.append_rows(new_rows, value_input_option="RAW")
 
         invalidate_cache(SHEET_ATTENDANCE)
 
