@@ -608,6 +608,12 @@ def index():
     return render_template("index.html")
 
 
+@app.route("/sw.js")
+def service_worker():
+    """Serve service worker from root scope for PWA."""
+    return app.send_static_file("sw.js")
+
+
 # ---------------------------------------------------------------------------
 # API: Classes
 # ---------------------------------------------------------------------------

@@ -7,6 +7,12 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="icon" href="/static/img/logo.png" type="image/png">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/img/icon-192x192.png">
+    <meta name="theme-color" content="#1d4ed8">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Hadir@SKBT">
     <link rel="stylesheet" href="/static/css/custom.css">
     <script>
         tailwind.config = {
@@ -529,5 +535,13 @@
     </div>
 
     <script src="/static/js/app.js"></script>
+    <script>
+        // Register Service Worker for PWA
+        if ("serviceWorker" in navigator) {
+            navigator.serviceWorker.register("/sw.js")
+                .then(() => console.log("SW registered"))
+                .catch((err) => console.log("SW failed:", err));
+        }
+    </script>
 </body>
 </html>
