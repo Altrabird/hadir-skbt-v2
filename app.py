@@ -1072,7 +1072,7 @@ def api_summary_class(class_name: str):
 @app.route("/api/export/<date_str>")
 @app.route("/api/export/<date_str>/<class_name>")
 def api_export(date_str: str, class_name: str | None = None):
-    """Download a CSV of absent students for a date, optionally filtered by class."""
+    """Download a CSV of full attendance list for a date, optionally filtered by class."""
     try:
         records = get_data_from_sheet(SHEET_ATTENDANCE)
         if not records:
@@ -1080,16 +1080,35 @@ def api_export(date_str: str, class_name: str | None = None):
 
         df = pd.DataFrame(records)
         df.columns = [c.upper() for c in df.columns]
-        mask = df["DATE"].astype(str).str.contains(date_str)
+        df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+        mask = df["DATE_ONLY"] == date_str
         if class_name:
             mask = mask & (df["CLASS"] == class_name)
 
         filtered = df[mask].copy()
-        absent = filtered[filtered["STATUS"] == STATUS_ABSENT][["DATE", "NAME", "CLASS"]]
+        if filtered.empty:
+            return Response("No data for this date", status=404)
 
+        # Build clean export with Bil, Nama, Kelas, Status, Sesi
+        filtered = filtered.sort_values(["CLASS", "NAME"])
+        rows = []
+        bil = 0
+        for _, row in filtered.iterrows():
+            bil += 1
+            status_label = "Hadir" if row["STATUS"] == STATUS_PRESENT else "Tidak Hadir"
+            rows.append({
+                "Bil": bil,
+                "Nama": row["NAME"],
+                "Kelas": row["CLASS"],
+                "Status": status_label,
+                "Sesi": get_session(row["CLASS"]),
+            })
+
+        export_df = pd.DataFrame(rows)
         buf = io.StringIO()
-        absent.to_csv(buf, index=False)
-        filename = f"Absent_{class_name or 'All'}_{date_str}.csv"
+        export_df.to_csv(buf, index=False)
+        label = class_name or "Semua"
+        filename = f"Kehadiran_{label}_{date_str}.csv"
         return Response(
             buf.getvalue(),
             mimetype="text/csv",
