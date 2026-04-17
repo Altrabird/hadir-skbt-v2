@@ -764,6 +764,190 @@ function downloadRmtExcel() {
 }
 
 // ---------------------------------------------------------------------------
+// Settings Modal: Student Management
+// ---------------------------------------------------------------------------
+let _settingsMode = "add";
+
+function openSettings() {
+    const modal = document.getElementById("settings-modal");
+    modal.classList.remove("hidden");
+    // Populate class dropdown
+    const sel = document.getElementById("settings-class");
+    const currentVal = sel.value;
+    apiFetch("/api/classes").then(r => r.json()).then(classes => {
+        sel.innerHTML = '<option value="">— Pilih kelas —</option>';
+        classes.forEach(c => {
+            sel.innerHTML += `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`;
+        });
+        if (currentVal) sel.value = currentVal;
+    }).catch(() => {});
+    // Enable/disable add button based on name input
+    const nameInput = document.getElementById("settings-add-name");
+    nameInput.addEventListener("input", () => {
+        document.getElementById("settings-add-btn").disabled =
+            !nameInput.value.trim() || !document.getElementById("settings-class").value;
+    });
+}
+
+function closeSettings() {
+    document.getElementById("settings-modal").classList.add("hidden");
+}
+
+function switchSettingsMode(mode) {
+    _settingsMode = mode;
+    ["add", "remove"].forEach(m => {
+        const btn = document.getElementById(`settings-tab-${m}`);
+        const content = document.getElementById(`settings-mode-${m}`);
+        if (m === mode) {
+            btn.classList.add("active");
+            content.classList.remove("hidden");
+        } else {
+            btn.classList.remove("active");
+            content.classList.add("hidden");
+        }
+    });
+    loadSettingsStudents();
+}
+
+async function loadSettingsStudents() {
+    const cls = document.getElementById("settings-class").value;
+    const addList = document.getElementById("settings-add-list");
+    const removeList = document.getElementById("settings-remove-list");
+    const addBtn = document.getElementById("settings-add-btn");
+
+    addBtn.disabled = true;
+
+    if (!cls) {
+        const emptyMsg = '<p class="text-xs text-gray-300 text-center py-4">Pilih kelas untuk melihat senarai.</p>';
+        addList.innerHTML = emptyMsg;
+        removeList.innerHTML = emptyMsg;
+        return;
+    }
+
+    try {
+        const res = await apiFetch(`/api/students/${encodeURIComponent(cls)}`);
+        const students = await res.json();
+
+        // Add mode — show reference list with RMT badge + toggle
+        let addHtml = "";
+        students.forEach((s, i) => {
+            const rmtBadge = s.is_rmt
+                ? '<span class="text-[9px] font-bold text-orange-600 bg-orange-100 px-1 py-0.5 rounded">RMT</span>'
+                : '';
+            const rmtToggle = s.is_rmt
+                ? `<button onclick="toggleRmt('${escapeHtml(s.name)}', false)" class="text-[9px] font-bold text-red-500 hover:text-red-700 px-1.5 py-0.5 rounded hover:bg-red-50 transition" title="Buang dari RMT">Buang RMT</button>`
+                : `<button onclick="toggleRmt('${escapeHtml(s.name)}', true)" class="text-[9px] font-bold text-orange-500 hover:text-orange-700 px-1.5 py-0.5 rounded hover:bg-orange-50 transition" title="Set sebagai RMT">Set RMT</button>`;
+            addHtml += `
+                <div class="settings-student-row">
+                    <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                        <span class="text-[9px] text-gray-400 w-4 text-right shrink-0">${i + 1}</span>
+                        <span class="font-semibold text-gray-700 truncate">${escapeHtml(s.name)}</span>
+                        ${rmtBadge}
+                    </div>
+                    <div class="shrink-0">${rmtToggle}</div>
+                </div>`;
+        });
+        if (!students.length) addHtml = '<p class="text-xs text-gray-300 text-center py-4">Tiada murid dalam kelas ini.</p>';
+        addList.innerHTML = addHtml;
+
+        // Remove mode — show list with delete buttons
+        let removeHtml = "";
+        students.forEach((s, i) => {
+            const rmtBadge = s.is_rmt
+                ? '<span class="text-[9px] font-bold text-orange-600 bg-orange-100 px-1 py-0.5 rounded">RMT</span>'
+                : '';
+            removeHtml += `
+                <div class="settings-student-row">
+                    <div class="flex items-center gap-1.5 min-w-0 flex-1">
+                        <span class="text-[9px] text-gray-400 w-4 text-right shrink-0">${i + 1}</span>
+                        <span class="font-semibold text-gray-700 truncate">${escapeHtml(s.name)}</span>
+                        ${rmtBadge}
+                    </div>
+                    <button onclick="removeStudent('${escapeHtml(s.name)}', '${escapeHtml(cls)}')"
+                        class="shrink-0 w-7 h-7 rounded-lg bg-red-50 hover:bg-red-100 flex items-center justify-center transition" title="Padam">
+                        <i class="fa-solid fa-trash-can text-[10px] text-red-500"></i>
+                    </button>
+                </div>`;
+        });
+        if (!students.length) removeHtml = '<p class="text-xs text-gray-300 text-center py-4">Tiada murid dalam kelas ini.</p>';
+        removeList.innerHTML = removeHtml;
+
+        // Enable add button if name has value
+        const nameVal = document.getElementById("settings-add-name").value.trim();
+        addBtn.disabled = !nameVal;
+    } catch {
+        addList.innerHTML = '<p class="text-xs text-red-400 text-center py-4">Gagal memuatkan data.</p>';
+        removeList.innerHTML = '<p class="text-xs text-red-400 text-center py-4">Gagal memuatkan data.</p>';
+    }
+}
+
+async function addStudent() {
+    const cls = document.getElementById("settings-class").value;
+    const nameInput = document.getElementById("settings-add-name");
+    const name = nameInput.value.trim().toUpperCase();
+    const isRmt = document.getElementById("settings-add-rmt").checked;
+
+    if (!cls || !name) {
+        showToast("Sila pilih kelas dan masukkan nama murid.", "error");
+        return;
+    }
+
+    try {
+        const res = await apiFetch("/api/students/add", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, class: cls, is_rmt: isRmt}),
+        });
+        const d = await res.json();
+        if (d.success) {
+            showToast(`${name} berjaya ditambah ke ${cls}${isRmt ? ' (RMT)' : ''}.`, "success");
+            nameInput.value = "";
+            document.getElementById("settings-add-rmt").checked = false;
+            loadSettingsStudents();
+            // Refresh main class dropdowns
+            loadClasses();
+        }
+    } catch { /* toast shown by apiFetch */ }
+}
+
+async function removeStudent(name, cls) {
+    if (!confirm(`Padam ${name} dari kelas ${cls}?\n\nRekod kehadiran lama TIDAK akan terjejas.`)) return;
+
+    try {
+        const res = await apiFetch("/api/students/remove", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, class: cls}),
+        });
+        const d = await res.json();
+        if (d.success) {
+            showToast(`${name} telah dipadamkan dari ${cls}.`, "success");
+            loadSettingsStudents();
+            loadClasses();
+        }
+    } catch { /* toast shown */ }
+}
+
+async function toggleRmt(name, setRmt) {
+    const action = setRmt ? "set sebagai murid RMT" : "buang dari senarai RMT";
+    if (!confirm(`${name}\n\n${setRmt ? 'Set' : 'Buang'} sebagai murid RMT?`)) return;
+
+    try {
+        const res = await apiFetch("/api/students/update-rmt", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({name, is_rmt: setRmt}),
+        });
+        const d = await res.json();
+        if (d.success) {
+            showToast(`${name} ${setRmt ? 'kini murid RMT' : 'bukan lagi murid RMT'}.`, "success");
+            loadSettingsStudents();
+        }
+    } catch { /* toast shown */ }
+}
+
+
+// ---------------------------------------------------------------------------
 // Utility: Format date
 // ---------------------------------------------------------------------------
 function formatDate(dateStr) {

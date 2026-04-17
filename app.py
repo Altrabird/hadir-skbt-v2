@@ -643,6 +643,145 @@ def api_students(class_name: str):
 
 
 # ---------------------------------------------------------------------------
+# API: Student Management (Add / Remove / Update RMT)
+# ---------------------------------------------------------------------------
+_student_mgmt_lock = threading.Lock()
+
+
+@app.route("/api/students/add", methods=["POST"])
+def api_add_student():
+    """Add a new student. JSON: {name, class, is_rmt}"""
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({"error": "No JSON body"}), 400
+
+        name = str(payload.get("name", "")).strip().upper()
+        cls = str(payload.get("class", "")).strip()
+        is_rmt = bool(payload.get("is_rmt", False))
+
+        if not name or not cls:
+            return jsonify({"error": "Nama dan kelas diperlukan"}), 400
+
+        with _student_mgmt_lock:
+            client = get_spreadsheet_client()
+            spreadsheet = client.open_by_url(SPREADSHEET_URL)
+
+            # Check for duplicate in Students sheet
+            students_ws = spreadsheet.worksheet(SHEET_STUDENTS)
+            existing = students_ws.get_all_records()
+            for row in existing:
+                if str(row["Name"]).strip().upper() == name and str(row["Class"]).strip() == cls:
+                    return jsonify({"error": f"Murid '{name}' sudah wujud dalam kelas {cls}"}), 409
+
+            # Add to Students sheet
+            students_ws.append_row([name, cls], value_input_option="RAW")
+
+            # Add to RMT sheet if is_rmt
+            if is_rmt:
+                rmt_ws = spreadsheet.worksheet(SHEET_RMT)
+                rmt_ws.append_row([name], value_input_option="RAW")
+
+        invalidate_cache(SHEET_STUDENTS)
+        invalidate_cache(SHEET_RMT)
+        return jsonify({"success": True, "name": name, "class": cls, "is_rmt": is_rmt})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/students/remove", methods=["POST"])
+def api_remove_student():
+    """Remove a student from Students sheet (and RMT if exists).
+    JSON: {name, class}
+    Attendance records are NOT deleted — only the student list entry.
+    """
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({"error": "No JSON body"}), 400
+
+        name = str(payload.get("name", "")).strip().upper()
+        cls = str(payload.get("class", "")).strip()
+
+        if not name or not cls:
+            return jsonify({"error": "Nama dan kelas diperlukan"}), 400
+
+        with _student_mgmt_lock:
+            client = get_spreadsheet_client()
+            spreadsheet = client.open_by_url(SPREADSHEET_URL)
+
+            # Remove from Students sheet
+            students_ws = spreadsheet.worksheet(SHEET_STUDENTS)
+            all_vals = students_ws.get_all_values()
+            rows_to_delete = []
+            for i, row in enumerate(all_vals[1:], start=2):
+                if len(row) >= 2 and str(row[0]).strip().upper() == name and str(row[1]).strip() == cls:
+                    rows_to_delete.append(i)
+            for idx in reversed(rows_to_delete):
+                students_ws.delete_rows(idx)
+
+            # Also remove from RMT sheet if present
+            rmt_ws = spreadsheet.worksheet(SHEET_RMT)
+            rmt_vals = rmt_ws.get_all_values()
+            rmt_to_delete = []
+            for i, row in enumerate(rmt_vals[1:], start=2):
+                if len(row) >= 1 and str(row[0]).strip().upper() == name:
+                    rmt_to_delete.append(i)
+            for idx in reversed(rmt_to_delete):
+                rmt_ws.delete_rows(idx)
+
+        invalidate_cache(SHEET_STUDENTS)
+        invalidate_cache(SHEET_RMT)
+        return jsonify({"success": True, "name": name, "class": cls})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/students/update-rmt", methods=["POST"])
+def api_update_rmt():
+    """Toggle RMT status for a student.
+    JSON: {name, is_rmt}
+    If is_rmt=true → add to RMT sheet (if not already there)
+    If is_rmt=false → remove from RMT sheet
+    """
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({"error": "No JSON body"}), 400
+
+        name = str(payload.get("name", "")).strip().upper()
+        is_rmt = bool(payload.get("is_rmt", False))
+
+        if not name:
+            return jsonify({"error": "Nama diperlukan"}), 400
+
+        with _student_mgmt_lock:
+            client = get_spreadsheet_client()
+            spreadsheet = client.open_by_url(SPREADSHEET_URL)
+            rmt_ws = spreadsheet.worksheet(SHEET_RMT)
+            rmt_vals = rmt_ws.get_all_values()
+
+            # Check if name already in RMT
+            existing_rows = []
+            for i, row in enumerate(rmt_vals[1:], start=2):
+                if len(row) >= 1 and str(row[0]).strip().upper() == name:
+                    existing_rows.append(i)
+
+            if is_rmt and not existing_rows:
+                # Add to RMT
+                rmt_ws.append_row([name], value_input_option="RAW")
+            elif not is_rmt and existing_rows:
+                # Remove from RMT
+                for idx in reversed(existing_rows):
+                    rmt_ws.delete_rows(idx)
+
+        invalidate_cache(SHEET_RMT)
+        return jsonify({"success": True, "name": name, "is_rmt": is_rmt})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # API: Get attendance for a date (optionally filtered by class)
 # ---------------------------------------------------------------------------
 @app.route("/api/attendance/<date_str>")

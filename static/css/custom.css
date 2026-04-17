@@ -232,6 +232,34 @@ table tbody tr:hover { background: #f8fafc; }
     background: #f1f5f9;
 }
 
+/* Settings modal tabs */
+.settings-tab {
+    color: #9ca3af;
+    border-bottom: 2px solid transparent;
+}
+.settings-tab.active {
+    color: #374151;
+    border-bottom-color: #374151;
+    background: #f9fafb;
+}
+.settings-tab:hover:not(.active) {
+    color: #6b7280;
+    background: #f9fafb;
+}
+
+/* Settings student row */
+.settings-student-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.4rem 0.5rem;
+    border-bottom: 1px solid #f1f5f9;
+    font-size: 0.7rem;
+    transition: background 0.1s;
+}
+.settings-student-row:last-child { border-bottom: none; }
+.settings-student-row:hover { background: #f8fafc; }
+
 @media print {
     header, footer, .status-toggle, #attendance-body, #loading-overlay, #toast-container, #sidebar-panel, #sidebar-toggle-btn, #sidebar-overlay { display: none !important; }
 }
