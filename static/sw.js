@@ -1,5 +1,5 @@
 // Hadir@SKBT — Service Worker v1
-const CACHE_NAME = "hadir-skbt-v1";
+const CACHE_NAME = "hadir-skbt-v2";
 const STATIC_ASSETS = [
   "/",
   "/static/css/custom.css",
