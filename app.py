@@ -40,6 +40,10 @@ TIMEZONE = ZoneInfo("Asia/Kuala_Lumpur")
 SHEET_STUDENTS = "Students"
 SHEET_RMT = "RMT"
 SHEET_ATTENDANCE = "Sheet1"
+SHEET_LOG = "REKOD LOG TETAPAN"
+
+# Settings password
+SETTINGS_PASSWORD = "xba3051"
 
 # Status constants
 STATUS_PRESENT = "Present"
@@ -643,6 +647,63 @@ def api_students(class_name: str):
 
 
 # ---------------------------------------------------------------------------
+# API: Settings Auth & Audit Log
+# ---------------------------------------------------------------------------
+@app.route("/api/settings/teachers")
+def api_settings_teachers():
+    """Return list of teacher names from the log tab (column A)."""
+    try:
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = spreadsheet.worksheet(SHEET_LOG)
+        all_vals = ws.col_values(1)  # Column A only
+        # Skip header row, filter empties
+        teachers = [name.strip() for name in all_vals[1:] if name.strip()]
+        teachers.sort()
+        return jsonify(teachers)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/settings/login", methods=["POST"])
+def api_settings_login():
+    """Validate settings password. JSON: {teacher, password}"""
+    payload = request.get_json()
+    if not payload:
+        return jsonify({"error": "No JSON body"}), 400
+
+    teacher = str(payload.get("teacher", "")).strip()
+    password = str(payload.get("password", "")).strip()
+
+    if not teacher:
+        return jsonify({"error": "Sila pilih nama guru"}), 400
+    if password != SETTINGS_PASSWORD:
+        return jsonify({"error": "Kata laluan salah"}), 403
+
+    return jsonify({"success": True, "teacher": teacher})
+
+
+def write_settings_log(teacher: str, action: str, details: str):
+    """Write an audit log entry to the REKOD LOG TETAPAN sheet (columns C-F)."""
+    try:
+        now = datetime.datetime.now(tz=TIMEZONE)
+        timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = spreadsheet.worksheet(SHEET_LOG)
+
+        # Find next empty row in column C (log area)
+        log_col = ws.col_values(3)  # Column C = TARIKH
+        next_row = len(log_col) + 1
+
+        ws.update(f"C{next_row}:F{next_row}", [[timestamp, teacher, action, details]])
+        log.info("Settings log: %s | %s | %s | %s", timestamp, teacher, action, details)
+    except Exception as e:
+        log.warning("Failed to write settings log: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # API: Student Management (Add / Remove / Update RMT)
 # ---------------------------------------------------------------------------
 _student_mgmt_lock = threading.Lock()
@@ -650,7 +711,7 @@ _student_mgmt_lock = threading.Lock()
 
 @app.route("/api/students/add", methods=["POST"])
 def api_add_student():
-    """Add a new student. JSON: {name, class, is_rmt}"""
+    """Add a new student. JSON: {name, class, is_rmt, teacher}"""
     try:
         payload = request.get_json()
         if not payload:
@@ -684,6 +745,11 @@ def api_add_student():
 
         invalidate_cache(SHEET_STUDENTS)
         invalidate_cache(SHEET_RMT)
+
+        teacher = str(payload.get("teacher", "")).strip()
+        rmt_label = " [RMT]" if is_rmt else ""
+        write_settings_log(teacher, "Tambah Murid", f"{name} → {cls}{rmt_label}")
+
         return jsonify({"success": True, "name": name, "class": cls, "is_rmt": is_rmt})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -732,6 +798,10 @@ def api_remove_student():
 
         invalidate_cache(SHEET_STUDENTS)
         invalidate_cache(SHEET_RMT)
+
+        teacher = str(payload.get("teacher", "")).strip()
+        write_settings_log(teacher, "Buang Murid", f"{name} dari {cls}")
+
         return jsonify({"success": True, "name": name, "class": cls})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -776,6 +846,11 @@ def api_update_rmt():
                     rmt_ws.delete_rows(idx)
 
         invalidate_cache(SHEET_RMT)
+
+        teacher = str(payload.get("teacher", "")).strip()
+        action = "Set RMT" if is_rmt else "Buang RMT"
+        write_settings_log(teacher, action, name)
+
         return jsonify({"success": True, "name": name, "is_rmt": is_rmt})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

@@ -764,13 +764,75 @@ function downloadRmtExcel() {
 }
 
 // ---------------------------------------------------------------------------
-// Settings Modal: Student Management
+// Settings Modal: Login + Student Management
 // ---------------------------------------------------------------------------
 let _settingsMode = "add";
+let _settingsTeacher = "";
 
 function openSettings() {
+    // Show login modal first
+    const loginModal = document.getElementById("settings-login-modal");
+    loginModal.classList.remove("hidden");
+    document.getElementById("settings-login-error").classList.add("hidden");
+    document.getElementById("settings-login-password").value = "";
+
+    // Load teacher list
+    const sel = document.getElementById("settings-login-teacher");
+    apiFetch("/api/settings/teachers").then(r => r.json()).then(teachers => {
+        sel.innerHTML = '<option value="">— Pilih nama anda —</option>';
+        teachers.forEach(t => {
+            sel.innerHTML += `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`;
+        });
+    }).catch(() => {});
+}
+
+function closeSettingsLogin() {
+    document.getElementById("settings-login-modal").classList.add("hidden");
+}
+
+async function submitSettingsLogin() {
+    const teacher = document.getElementById("settings-login-teacher").value;
+    const password = document.getElementById("settings-login-password").value;
+    const errDiv = document.getElementById("settings-login-error");
+
+    if (!teacher) {
+        errDiv.textContent = "Sila pilih nama guru.";
+        errDiv.classList.remove("hidden");
+        return;
+    }
+    if (!password) {
+        errDiv.textContent = "Sila masukkan kata laluan.";
+        errDiv.classList.remove("hidden");
+        return;
+    }
+
+    try {
+        const res = await fetch("/api/settings/login", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({teacher, password}),
+        });
+        const d = await res.json();
+
+        if (d.success) {
+            _settingsTeacher = teacher;
+            closeSettingsLogin();
+            openSettingsPanel();
+        } else {
+            errDiv.textContent = d.error || "Kata laluan salah.";
+            errDiv.classList.remove("hidden");
+        }
+    } catch {
+        errDiv.textContent = "Ralat sambungan.";
+        errDiv.classList.remove("hidden");
+    }
+}
+
+function openSettingsPanel() {
     const modal = document.getElementById("settings-modal");
     modal.classList.remove("hidden");
+    document.getElementById("settings-teacher-label").textContent = _settingsTeacher;
+
     // Populate class dropdown
     const sel = document.getElementById("settings-class");
     const currentVal = sel.value;
@@ -781,6 +843,7 @@ function openSettings() {
         });
         if (currentVal) sel.value = currentVal;
     }).catch(() => {});
+
     // Enable/disable add button based on name input
     const nameInput = document.getElementById("settings-add-name");
     nameInput.addEventListener("input", () => {
@@ -791,6 +854,7 @@ function openSettings() {
 
 function closeSettings() {
     document.getElementById("settings-modal").classList.add("hidden");
+    _settingsTeacher = "";
 }
 
 function switchSettingsMode(mode) {
@@ -896,7 +960,7 @@ async function addStudent() {
         const res = await apiFetch("/api/students/add", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({name, class: cls, is_rmt: isRmt}),
+            body: JSON.stringify({name, class: cls, is_rmt: isRmt, teacher: _settingsTeacher}),
         });
         const d = await res.json();
         if (d.success) {
@@ -917,7 +981,7 @@ async function removeStudent(name, cls) {
         const res = await apiFetch("/api/students/remove", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({name, class: cls}),
+            body: JSON.stringify({name, class: cls, teacher: _settingsTeacher}),
         });
         const d = await res.json();
         if (d.success) {
@@ -936,7 +1000,7 @@ async function toggleRmt(name, setRmt) {
         const res = await apiFetch("/api/students/update-rmt", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({name, is_rmt: setRmt}),
+            body: JSON.stringify({name, is_rmt: setRmt, teacher: _settingsTeacher}),
         });
         const d = await res.json();
         if (d.success) {
