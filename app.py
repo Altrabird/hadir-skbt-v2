@@ -1086,24 +1086,38 @@ def api_dashboard(date_str: str):
                     "absent_names": [],
                 })
 
-        # Per-year summary
+        # Enrolled count per year from Students tab (source of truth)
+        enrolled_by_year = {y: 0 for y in ("1", "2", "3", "4", "5", "6")}
+        for s in students:
+            cls = str(s["Class"]).strip()
+            parts = cls.split()
+            if parts and parts[0] in enrolled_by_year:
+                enrolled_by_year[parts[0]] += 1
+
+        # Per-year summary — use enrolled total (so it matches Students tab)
         by_year = []
-        for y in ["1", "2", "3", "4", "5", "6"]:
-            year_df = daily[daily["CLASS"].str.startswith(y + " ")]
-            if not year_df.empty:
-                t = len(year_df)
-                p = int((year_df["STATUS"] == STATUS_PRESENT).sum())
-                a = t - p
-                session = "Petang" if y in ("1", "2", "3") else "Pagi"
-                by_year.append({
-                    "year": y,
-                    "label": f"Tahun {y}",
-                    "session": session,
-                    "present": p,
-                    "absent": a,
-                    "total": t,
-                    "pct": round(p / t * 100, 1) if t else 0,
-                })
+        for y in ("1", "2", "3", "4", "5", "6"):
+            enrolled = enrolled_by_year[y]
+            if enrolled == 0:
+                continue
+            # Match by first token (robust to whitespace edge cases)
+            year_df = daily[daily["CLASS"].astype(str).str.split().str[0] == y]
+            p = int((year_df["STATUS"] == STATUS_PRESENT).sum())
+            a = int((year_df["STATUS"] == STATUS_ABSENT).sum())
+            marked = p + a
+            not_marked = max(enrolled - marked, 0)
+            session = "Petang" if y in ("1", "2", "3") else "Pagi"
+            by_year.append({
+                "year": y,
+                "label": f"Tahun {y}",
+                "session": session,
+                "present": p,
+                "absent": a,
+                "marked": marked,
+                "not_marked": not_marked,
+                "total": enrolled,
+                "pct": round(p / enrolled * 100, 1) if enrolled else 0,
+            })
 
         return jsonify({
             "has_data": True,

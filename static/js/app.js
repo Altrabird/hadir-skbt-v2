@@ -304,6 +304,10 @@ function renderYearSummary(byYear) {
         const pct = y.pct;
         const color = pct >= 95 ? "emerald" : pct >= 90 ? "blue" : pct >= 80 ? "amber" : "red";
         const barW  = Math.max(pct, 2);
+        const notMarked = y.not_marked || 0;
+        const warnIcon = notMarked > 0
+            ? `<span class="text-[8px] text-amber-500 ml-0.5" title="${notMarked} murid belum direkod"><i class="fa-solid fa-circle-exclamation"></i></span>`
+            : '';
         return `
             <div class="flex items-center gap-2 py-1">
                 <span class="text-[10px] font-black text-gray-700 w-12 shrink-0">${escapeHtml(y.label)}</span>
@@ -312,7 +316,7 @@ function renderYearSummary(byYear) {
                          style="width:${barW}%"></div>
                 </div>
                 <span class="text-xs font-black text-${color}-600 w-11 text-right shrink-0">${pct}%</span>
-                <span class="text-[9px] text-gray-400 w-16 text-right shrink-0">${y.present}/${y.total}</span>
+                <span class="text-[9px] text-gray-400 w-16 text-right shrink-0">${y.present}/${y.total}${warnIcon}</span>
             </div>`;
     }
 
