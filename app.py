@@ -1086,6 +1086,25 @@ def api_dashboard(date_str: str):
                     "absent_names": [],
                 })
 
+        # Per-year summary
+        by_year = []
+        for y in ["1", "2", "3", "4", "5", "6"]:
+            year_df = daily[daily["CLASS"].str.startswith(y + " ")]
+            if not year_df.empty:
+                t = len(year_df)
+                p = int((year_df["STATUS"] == STATUS_PRESENT).sum())
+                a = t - p
+                session = "Petang" if y in ("1", "2", "3") else "Pagi"
+                by_year.append({
+                    "year": y,
+                    "label": f"Tahun {y}",
+                    "session": session,
+                    "present": p,
+                    "absent": a,
+                    "total": t,
+                    "pct": round(p / t * 100, 1) if t else 0,
+                })
+
         return jsonify({
             "has_data": True,
             "total_marked": total,
@@ -1096,6 +1115,7 @@ def api_dashboard(date_str: str):
             "total_classes": len(all_classes),
             "pagi": session_metrics("Pagi"),
             "petang": session_metrics("Petang"),
+            "by_year": by_year,
             "rmt": {
                 "pagi_present": rmt_pagi_present,
                 "pagi_total": len(rmt_pagi),

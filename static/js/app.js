@@ -256,6 +256,9 @@ async function refreshDashboard() {
         setText("petang-absent", d.petang.absent);
         setText("petang-pct", `${d.petang.present_pct}%`);
 
+        // Year summary
+        renderYearSummary(d.by_year || []);
+
         const rmt = d.rmt;
         if (rmt.total_marked === 0) {
             document.getElementById("rmt-no-data").classList.remove("hidden");
@@ -284,6 +287,61 @@ async function refreshDashboard() {
 
         renderClassTable(d.class_summary);
     } catch { /* toast shown */ }
+}
+
+function renderYearSummary(byYear) {
+    const container = document.getElementById("year-summary-content");
+    if (!byYear || byYear.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-300 text-center py-2">Tiada data.</p>';
+        return;
+    }
+
+    // Split into Petang (1-3) and Pagi (4-6)
+    const petang = byYear.filter(y => y.session === "Petang");
+    const pagi   = byYear.filter(y => y.session === "Pagi");
+
+    function yearCard(y) {
+        const pct = y.pct;
+        const color = pct >= 95 ? "emerald" : pct >= 90 ? "blue" : pct >= 80 ? "amber" : "red";
+        const barW  = Math.max(pct, 2);
+        return `
+            <div class="flex items-center gap-2 py-1">
+                <span class="text-[10px] font-black text-gray-700 w-12 shrink-0">${escapeHtml(y.label)}</span>
+                <div class="flex-1 h-4 bg-gray-100 rounded-full overflow-hidden">
+                    <div class="h-full rounded-full bg-${color}-500 transition-all duration-500"
+                         style="width:${barW}%"></div>
+                </div>
+                <span class="text-xs font-black text-${color}-600 w-11 text-right shrink-0">${pct}%</span>
+                <span class="text-[9px] text-gray-400 w-16 text-right shrink-0">${y.present}/${y.total}</span>
+            </div>`;
+    }
+
+    let html = '<div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4">';
+
+    // Pagi group
+    if (pagi.length) {
+        html += `<div>
+            <div class="flex items-center gap-1 mb-1">
+                <i class="fa-solid fa-sun text-[9px] text-amber-500"></i>
+                <span class="text-[9px] font-bold text-amber-600 uppercase tracking-wider">Sesi Pagi</span>
+            </div>
+            ${pagi.map(yearCard).join("")}
+        </div>`;
+    }
+
+    // Petang group
+    if (petang.length) {
+        html += `<div>
+            <div class="flex items-center gap-1 mb-1">
+                <i class="fa-solid fa-moon text-[9px] text-indigo-500"></i>
+                <span class="text-[9px] font-bold text-indigo-600 uppercase tracking-wider">Sesi Petang</span>
+            </div>
+            ${petang.map(yearCard).join("")}
+        </div>`;
+    }
+
+    html += "</div>";
+    container.innerHTML = html;
 }
 
 function renderClassTable(summary) {
