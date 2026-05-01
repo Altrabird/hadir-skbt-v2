@@ -411,10 +411,38 @@ def build_morning_reminder(session: str) -> str:
     )
 
 
+_SENT_MARKER_DIR = "/tmp"
+
+
+def _job_already_fired_today(job_id: str) -> bool:
+    """Check if a job already fired today by looking at a marker file.
+    Cross-process safe — works across multiple Gunicorn workers.
+    Returns True if already fired today (caller should skip).
+    Otherwise creates the marker and returns False.
+    """
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    marker = os.path.join(_SENT_MARKER_DIR, f"hadir_skbt_{job_id}_{today}.marker")
+    if os.path.exists(marker):
+        return True
+    try:
+        # Atomic create — fails if file exists (race-safe)
+        fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return False
+    except FileExistsError:
+        return True
+    except Exception:
+        # If we can't create the marker for any reason, allow the send (don't block)
+        return False
+
+
 def scheduled_pagi_reminder():
     """Post morning reminder to Pagi group at 6:30 AM."""
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
     if not is_school_day(today) or not is_notifikasi_on():
+        return
+    if _job_already_fired_today("pagi_reminder"):
+        log.info("Pagi reminder already sent today, skipping duplicate")
         return
     if TELEGRAM_CHAT_PAGI:
         telegram_send(TELEGRAM_CHAT_PAGI, build_morning_reminder("Pagi"))
@@ -424,6 +452,9 @@ def scheduled_petang_reminder():
     """Post morning reminder to Petang group at 11:45 AM."""
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
     if not is_school_day(today) or not is_notifikasi_on():
+        return
+    if _job_already_fired_today("petang_reminder"):
+        log.info("Petang reminder already sent today, skipping duplicate")
         return
     if TELEGRAM_CHAT_PETANG:
         telegram_send(TELEGRAM_CHAT_PETANG, build_morning_reminder("Petang"))
@@ -436,6 +467,9 @@ def scheduled_pagi_summary():
     """Post final Pagi summary at 10:00 AM."""
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
     if not is_school_day(today) or not is_notifikasi_on():
+        return
+    if _job_already_fired_today("pagi_summary"):
+        log.info("Pagi summary already sent today, skipping duplicate")
         return
     invalidate_cache()
     send_session_update(today, "Pagi", is_scheduled=True)
@@ -450,6 +484,9 @@ def scheduled_petang_summary():
     today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
     if not is_school_day(today) or not is_notifikasi_on():
         return
+    if _job_already_fired_today("petang_summary"):
+        log.info("Petang summary already sent today, skipping duplicate")
+        return
     invalidate_cache()
     send_session_update(today, "Petang", is_scheduled=True)
     # Alert admin personally
@@ -459,14 +496,45 @@ def scheduled_petang_summary():
 
 
 _scheduler_started = False
+_scheduler_instance = None
+_SCHEDULER_LOCK_FILE = "/tmp/hadir_skbt_scheduler.lock"
+
+
+def _try_acquire_scheduler_lock():
+    """Try to acquire an exclusive file lock for the scheduler.
+    Returns the file handle if successful, None otherwise.
+    Only ONE Gunicorn worker will succeed — others will fail and skip.
+    The handle MUST be kept alive (never closed) for the lock to persist.
+    """
+    if not _HAS_FCNTL:
+        return True  # On Windows/dev, just allow it
+    try:
+        f = open(_SCHEDULER_LOCK_FILE, "w")
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        f.write(str(os.getpid()))
+        f.flush()
+        return f  # Keep handle alive — lock released only on process exit
+    except (IOError, BlockingIOError):
+        return None
 
 
 def start_scheduler():
-    """Start scheduler only once (avoid duplicate in Gunicorn workers)."""
-    global _scheduler_started
+    """Start scheduler only once across ALL Gunicorn workers.
+    Uses a file lock so only the first worker that acquires it runs the scheduler.
+    """
+    global _scheduler_started, _scheduler_instance
     if _scheduler_started:
         return
+
+    lock_handle = _try_acquire_scheduler_lock()
+    if lock_handle is None:
+        log.info("Scheduler already running in another worker (PID lock held). Skipping.")
+        _scheduler_started = True
+        return
+
     _scheduler_started = True
+    log.info("Scheduler starting in this worker (PID=%s)", os.getpid())
+
     scheduler = BackgroundScheduler(timezone="Asia/Kuala_Lumpur")
     if TELEGRAM_CHAT_PETANG:
         scheduler.add_job(scheduled_petang_summary, "cron", hour=15, minute=0, id="petang_summary")
@@ -475,6 +543,7 @@ def start_scheduler():
         scheduler.add_job(scheduled_pagi_summary, "cron", hour=10, minute=0, id="pagi_summary")
         scheduler.add_job(scheduled_pagi_reminder, "cron", hour=6, minute=30, id="pagi_reminder")
     scheduler.start()
+    _scheduler_instance = (scheduler, lock_handle)  # Keep refs alive
 
 
 # ---------------------------------------------------------------------------
