@@ -1762,14 +1762,23 @@ def telegram_trigger_page(secret: str):
 def api_telegram_send(secret: str, session: str | None = None):
     """Manually trigger sending summary to Telegram with secret code.
     Usage:
-        /api/telegram/send/skbt2026          → send both sessions
-        /api/telegram/send/skbt2026/petang   → send petang only
-        /api/telegram/send/skbt2026/pagi     → send pagi only
+        /api/telegram/send/skbt2026                    → send today, both sessions
+        /api/telegram/send/skbt2026/petang             → send today, petang only
+        /api/telegram/send/skbt2026?date=2026-04-30    → send specific date
     """
     if secret != TELEGRAM_SECRET:
         return jsonify({"error": "Kod rahsia salah"}), 403
 
-    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    # Optional date param — defaults to today
+    date_str = request.args.get("date", "").strip()
+    if not date_str:
+        date_str = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    # Validate date format
+    try:
+        datetime.datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "Format tarikh mesti YYYY-MM-DD"}), 400
+
     invalidate_cache()
     results = {}
 
@@ -1786,12 +1795,12 @@ def api_telegram_send(secret: str, session: str | None = None):
     for s in sessions_to_send:
         chat_id = get_chat_id_for_session(s)
         if chat_id:
-            send_session_update(today, s, is_scheduled=False)
+            send_session_update(date_str, s, is_scheduled=False)
             results[s] = {"sent": True, "chat_id": chat_id}
         else:
-            results[s] = {"sent": False, "error": f"Chat ID not configured"}
+            results[s] = {"sent": False, "error": "Chat ID not configured"}
 
-    return jsonify({"success": True, "date": today, "results": results})
+    return jsonify({"success": True, "date": date_str, "results": results})
 
 
 @app.route("/api/telegram/reminder/<secret>")
