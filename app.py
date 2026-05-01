@@ -8,8 +8,15 @@ import datetime
 import calendar
 import logging
 import threading
+import contextlib
 from zoneinfo import ZoneInfo
 from functools import lru_cache
+
+try:
+    import fcntl  # Unix only — used for cross-process file lock
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
 
 from flask import Flask, render_template, jsonify, request, Response
 import gspread
@@ -256,12 +263,17 @@ def build_session_summary(date_str: str, session: str, is_scheduled: bool = Fals
         if get_session(cls) == session:
             class_students.setdefault(cls, []).append(s["Name"])
 
-    # Parse attendance for today
+    # Parse attendance for today — exact date match, dedup by name
     recorded_classes = {}  # class -> {present, absent, total, absent_names, time}
     if records:
         df = pd.DataFrame(records)
         df.columns = [c.upper() for c in df.columns]
-        daily = df[df["DATE"].astype(str).str.contains(date_str)].copy()
+        df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+        daily = df[df["DATE_ONLY"] == date_str].copy()
+        # Sort by DATE descending so dedup keeps the latest entry per (CLASS, NAME)
+        daily = daily.sort_values("DATE", ascending=True)
+        daily["NAME_KEY"] = daily["NAME"].astype(str).str.strip().str.upper()
+        daily = daily.drop_duplicates(subset=["CLASS", "NAME_KEY"], keep="last")
 
         for cls in all_classes:
             cdf = daily[daily["CLASS"] == cls]
@@ -275,7 +287,7 @@ def build_session_summary(date_str: str, session: str, is_scheduled: bool = Fals
                     rmt_tag = " [RMT]" if str(name).strip().upper() in rmt_set else ""
                     absent_names.append(f"{name}{rmt_tag}")
                 try:
-                    time_str = str(cdf["DATE"].iloc[0]).split(" ")[1]
+                    time_str = str(cdf["DATE"].iloc[-1]).split(" ")[1]
                 except Exception:
                     time_str = ""
                 recorded_classes[cls] = {
@@ -876,10 +888,17 @@ def api_attendance(date_str: str, class_name: str | None = None):
 
         df = pd.DataFrame(records)
         df.columns = [c.upper() for c in df.columns]
-        mask = df["DATE"].astype(str).str.contains(date_str)
+        df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+        mask = df["DATE_ONLY"] == date_str
         if class_name:
             mask = mask & (df["CLASS"] == class_name)
-        filtered = df[mask]
+        filtered = df[mask].copy()
+
+        # Dedup: keep latest per (CLASS, NAME) so the form shows one row per student
+        if not filtered.empty:
+            filtered = filtered.sort_values("DATE", ascending=True)
+            filtered["NAME_KEY"] = filtered["NAME"].astype(str).str.strip().str.upper()
+            filtered = filtered.drop_duplicates(subset=["CLASS", "NAME_KEY"], keep="last")
 
         result = []
         for _, row in filtered.iterrows():
@@ -898,6 +917,29 @@ def api_attendance(date_str: str, class_name: str | None = None):
 # API: Submit attendance
 # ---------------------------------------------------------------------------
 _submit_lock = threading.Lock()
+_LOCK_FILE_PATH = "/tmp/hadir_skbt_submit.lock"
+
+
+@contextlib.contextmanager
+def submit_lock():
+    """Acquire both thread-level and process-level (file) lock.
+    Works across multiple Gunicorn workers on the same machine.
+    """
+    with _submit_lock:
+        if _HAS_FCNTL:
+            try:
+                f = open(_LOCK_FILE_PATH, "w")
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    f.close()
+            except Exception as e:
+                log.warning("File lock failed, falling back to thread lock only: %s", e)
+                yield
+        else:
+            yield
 
 
 @app.route("/api/attendance", methods=["POST"])
@@ -925,17 +967,22 @@ def api_submit_attendance():
         now = datetime.datetime.now(tz=TIMEZONE)
         timestamp = f"{target_date} {now.strftime('%H:%M:%S')}"
 
-        # Build new rows first (outside lock)
+        # Build new rows first (outside lock) — dedup by name (last status wins)
+        new_rows_map = {}  # NAME_KEY -> (name, status)
+        for s in student_list:
+            name_key = str(s["name"]).strip().upper()
+            new_rows_map[name_key] = (s["name"], s["status"])
+
         new_rows = []
         absent_count = 0
-        for s in student_list:
-            status = s["status"]
+        for name, status in new_rows_map.values():
             if status == STATUS_ABSENT:
                 absent_count += 1
-            new_rows.append([timestamp, s["name"], target_class, status])
+            new_rows.append([timestamp, name, target_class, status])
 
         # Lock to prevent concurrent read-delete-write race condition
-        with _submit_lock:
+        # Uses file lock — works across Gunicorn workers
+        with submit_lock():
             client = get_spreadsheet_client()
             spreadsheet = client.open_by_url(SPREADSHEET_URL)
             attendance_sheet = spreadsheet.sheet1
@@ -1006,13 +1053,19 @@ def api_dashboard(date_str: str):
 
         df = pd.DataFrame(records)
         df.columns = [c.upper() for c in df.columns]
-        daily = df[df["DATE"].astype(str).str.contains(date_str)].copy()
+        df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+        daily = df[df["DATE_ONLY"] == date_str].copy()
 
         if daily.empty:
             return jsonify({
                 "has_data": False,
                 "all_classes": list(all_classes),
             })
+
+        # Dedup: keep latest entry per (CLASS, NAME) if duplicates exist
+        daily = daily.sort_values("DATE", ascending=True)
+        daily["NAME_KEY"] = daily["NAME"].astype(str).str.strip().str.upper()
+        daily = daily.drop_duplicates(subset=["CLASS", "NAME_KEY"], keep="last")
 
         # Add session & RMT flags
         class_session = {s["Class"]: get_session(s["Class"]) for s in students}
@@ -1057,7 +1110,7 @@ def api_dashboard(date_str: str):
                 t = len(cdf)
                 absent_names = cdf[cdf["STATUS"] == STATUS_ABSENT]["NAME"].tolist()
                 try:
-                    last_update = str(cdf["DATE"].iloc[0]).split(" ")[1]
+                    last_update = str(cdf["DATE"].iloc[-1]).split(" ")[1]
                 except Exception:
                     last_update = "Updated"
                 class_summary.append({
