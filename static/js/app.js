@@ -289,7 +289,11 @@ async function refreshDashboard() {
     } catch { /* toast shown */ }
 }
 
+// Cache last year summary for modal access
+let _lastYearSummary = [];
+
 function renderYearSummary(byYear) {
+    _lastYearSummary = byYear || [];
     const container = document.getElementById("year-summary-content");
     if (!byYear || byYear.length === 0) {
         container.innerHTML = '<p class="text-xs text-gray-300 text-center py-2">Tiada data.</p>';
@@ -306,7 +310,7 @@ function renderYearSummary(byYear) {
         const barW  = Math.max(pct, 2);
         const notMarked = y.not_marked || 0;
         const warnIcon = notMarked > 0
-            ? `<span class="text-[8px] text-amber-500 ml-0.5" title="${notMarked} murid belum direkod"><i class="fa-solid fa-circle-exclamation"></i></span>`
+            ? `<button onclick="showUnmarkedDetails('${y.year}')" class="text-[10px] text-amber-500 hover:text-amber-600 ml-0.5 cursor-pointer" title="Klik untuk lihat ${notMarked} murid belum direkod"><i class="fa-solid fa-circle-exclamation"></i></button>`
             : '';
         return `
             <div class="flex items-center gap-2 py-1">
@@ -316,7 +320,7 @@ function renderYearSummary(byYear) {
                          style="width:${barW}%"></div>
                 </div>
                 <span class="text-xs font-black text-${color}-600 w-11 text-right shrink-0">${pct}%</span>
-                <span class="text-[9px] text-gray-400 w-16 text-right shrink-0">${y.present}/${y.total}${warnIcon}</span>
+                <span class="text-[9px] text-gray-400 w-16 text-right shrink-0 inline-flex items-center justify-end gap-0.5">${y.present}/${y.total}${warnIcon}</span>
             </div>`;
     }
 
@@ -346,6 +350,38 @@ function renderYearSummary(byYear) {
 
     html += "</div>";
     container.innerHTML = html;
+}
+
+function showUnmarkedDetails(yearKey) {
+    const y = _lastYearSummary.find(x => x.year === yearKey);
+    if (!y || !y.not_marked_classes || y.not_marked_classes.length === 0) return;
+
+    let listHtml = "";
+    y.not_marked_classes.forEach(c => {
+        const studentRows = c.students.map((n, i) =>
+            `<div class="flex items-center gap-1.5 py-0.5 text-[10px]">
+                <span class="text-gray-400 w-4 text-right">${i + 1}.</span>
+                <span class="text-gray-700">${escapeHtml(n)}</span>
+            </div>`
+        ).join("");
+        listHtml += `
+            <div class="border border-gray-200 rounded-lg p-2.5 mb-2">
+                <div class="flex items-center justify-between mb-1.5 pb-1.5 border-b border-gray-100">
+                    <span class="font-bold text-xs text-gray-800">${escapeHtml(c.class)}</span>
+                    <span class="text-[9px] font-bold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">${c.count} murid</span>
+                </div>
+                ${studentRows}
+            </div>`;
+    });
+
+    const modal = document.getElementById("unmarked-modal");
+    document.getElementById("unmarked-modal-title").textContent = `${y.label}: ${y.not_marked} Murid Belum Direkod`;
+    document.getElementById("unmarked-modal-content").innerHTML = listHtml;
+    modal.classList.remove("hidden");
+}
+
+function closeUnmarkedModal() {
+    document.getElementById("unmarked-modal").classList.add("hidden");
 }
 
 function renderClassTable(summary) {

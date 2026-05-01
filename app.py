@@ -1139,18 +1139,28 @@ def api_dashboard(date_str: str):
                     "absent_names": [],
                 })
 
-        # Enrolled count per year from Students tab (source of truth)
-        enrolled_by_year = {y: 0 for y in ("1", "2", "3", "4", "5", "6")}
+        # Enrolled per year from Students tab (source of truth)
+        # Build {year: [{name, class}, ...]}
+        enrolled_by_year = {y: [] for y in ("1", "2", "3", "4", "5", "6")}
         for s in students:
             cls = str(s["Class"]).strip()
             parts = cls.split()
             if parts and parts[0] in enrolled_by_year:
-                enrolled_by_year[parts[0]] += 1
+                enrolled_by_year[parts[0]].append({
+                    "name": str(s["Name"]).strip(),
+                    "class": cls,
+                })
+
+        # Build set of (class, name_upper) that have been marked today
+        marked_keys = set()
+        for _, row in daily.iterrows():
+            marked_keys.add((str(row["CLASS"]).strip(), str(row["NAME"]).strip().upper()))
 
         # Per-year summary — use enrolled total (so it matches Students tab)
         by_year = []
         for y in ("1", "2", "3", "4", "5", "6"):
-            enrolled = enrolled_by_year[y]
+            enrolled_list = enrolled_by_year[y]
+            enrolled = len(enrolled_list)
             if enrolled == 0:
                 continue
             # Match by first token (robust to whitespace edge cases)
@@ -1158,7 +1168,19 @@ def api_dashboard(date_str: str):
             p = int((year_df["STATUS"] == STATUS_PRESENT).sum())
             a = int((year_df["STATUS"] == STATUS_ABSENT).sum())
             marked = p + a
-            not_marked = max(enrolled - marked, 0)
+
+            # Find unmarked students grouped by class
+            not_marked_by_class = {}
+            for st in enrolled_list:
+                key = (st["class"], st["name"].upper())
+                if key not in marked_keys:
+                    not_marked_by_class.setdefault(st["class"], []).append(st["name"])
+
+            not_marked_classes = [
+                {"class": cls, "students": sorted(names), "count": len(names)}
+                for cls, names in sorted(not_marked_by_class.items())
+            ]
+            not_marked_count = sum(c["count"] for c in not_marked_classes)
             session = "Petang" if y in ("1", "2", "3") else "Pagi"
             by_year.append({
                 "year": y,
@@ -1167,7 +1189,8 @@ def api_dashboard(date_str: str):
                 "present": p,
                 "absent": a,
                 "marked": marked,
-                "not_marked": not_marked,
+                "not_marked": not_marked_count,
+                "not_marked_classes": not_marked_classes,
                 "total": enrolled,
                 "pct": round(p / enrolled * 100, 1) if enrolled else 0,
             })

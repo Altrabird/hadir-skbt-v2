@@ -421,6 +421,26 @@
         </div>
     </div>
 
+    <!-- Unmarked Students Modal -->
+    <div id="unmarked-modal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-3">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col overflow-hidden">
+            <div class="bg-gradient-to-r from-amber-500 to-orange-500 px-4 py-3 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-triangle-exclamation text-white text-sm"></i>
+                    <h2 id="unmarked-modal-title" class="text-sm font-bold text-white">Murid Belum Direkod</h2>
+                </div>
+                <button onclick="closeUnmarkedModal()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark text-white text-xs"></i>
+                </button>
+            </div>
+            <div class="flex items-start gap-2 px-3 py-2 bg-amber-50 border-b border-amber-200 text-[10px] text-amber-700 font-medium">
+                <i class="fa-solid fa-circle-info text-amber-500 mt-0.5 shrink-0"></i>
+                <span>Senarai murid yang kelasnya <strong>belum mengisi kehadiran hari ini</strong>. Sila beritahu guru kelas berkenaan untuk mengemas kini.</span>
+            </div>
+            <div id="unmarked-modal-content" class="flex-1 overflow-y-auto p-3"></div>
+        </div>
+    </div>
+
     <!-- Settings Login Modal -->
     <div id="settings-login-modal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-3">
         <div class="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
