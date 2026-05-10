@@ -493,20 +493,24 @@
             <!-- Mode Tabs -->
             <div class="flex border-b border-gray-200 shrink-0">
                 <button onclick="switchSettingsMode('add')" id="settings-tab-add"
-                    class="flex-1 py-2.5 text-xs font-bold text-center transition settings-tab active">
-                    <i class="fa-solid fa-user-plus mr-1"></i>Tambah Murid
+                    class="flex-1 py-2.5 text-[11px] font-bold text-center transition settings-tab active">
+                    <i class="fa-solid fa-user-plus mr-0.5"></i>Tambah
                 </button>
                 <button onclick="switchSettingsMode('remove')" id="settings-tab-remove"
-                    class="flex-1 py-2.5 text-xs font-bold text-center transition settings-tab">
-                    <i class="fa-solid fa-user-minus mr-1"></i>Buang Murid
+                    class="flex-1 py-2.5 text-[11px] font-bold text-center transition settings-tab">
+                    <i class="fa-solid fa-user-minus mr-0.5"></i>Buang
+                </button>
+                <button onclick="switchSettingsMode('notif')" id="settings-tab-notif"
+                    class="flex-1 py-2.5 text-[11px] font-bold text-center transition settings-tab">
+                    <i class="fa-solid fa-bell mr-0.5"></i>Notifikasi
                 </button>
             </div>
 
             <!-- Modal Content -->
             <div class="flex-1 overflow-y-auto p-4 space-y-3">
 
-                <!-- Class Selector (shared) -->
-                <div>
+                <!-- Class Selector (shared between add/remove) -->
+                <div id="settings-class-wrapper">
                     <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Kelas</label>
                     <select id="settings-class" onchange="loadSettingsStudents()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-gray-400 outline-none bg-white">
                         <option value="">— Pilih kelas —</option>
@@ -561,6 +565,51 @@
                     </div>
                     <div id="settings-remove-list" class="max-h-[350px] overflow-y-auto rounded-lg border border-gray-100">
                         <p class="text-xs text-gray-300 text-center py-4">Pilih kelas untuk melihat senarai.</p>
+                    </div>
+                </div>
+
+                <!-- NOTIFIKASI MODE -->
+                <div id="settings-mode-notif" class="hidden">
+                    <div class="flex items-start gap-2 px-3 py-2 mb-3 bg-blue-50 border border-blue-200 rounded-lg text-[10px] text-blue-700 font-medium">
+                        <i class="fa-solid fa-circle-info text-blue-500 mt-0.5 shrink-0"></i>
+                        <span>Kawal notifikasi auto ke group Telegram (peringatan pagi & rumusan akhir). Sabtu &amp; Ahad auto-skip.</span>
+                    </div>
+
+                    <!-- Toggle Card -->
+                    <div class="bg-gradient-to-br from-indigo-500 to-blue-600 rounded-xl p-4 text-white shadow-md">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center gap-2">
+                                <i class="fa-solid fa-bell text-lg"></i>
+                                <div>
+                                    <p class="text-sm font-bold">Notifikasi Telegram</p>
+                                    <p id="notif-status-label" class="text-[10px] text-blue-100">—</p>
+                                </div>
+                            </div>
+                            <label class="relative inline-flex items-center cursor-pointer">
+                                <input type="checkbox" id="notif-toggle" onchange="toggleNotifikasi()" class="sr-only peer">
+                                <div class="w-12 h-6 bg-white/30 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-white after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"></div>
+                            </label>
+                        </div>
+                        <p class="text-[10px] text-blue-100 leading-relaxed">
+                            Bila <strong>HIDUP</strong>, sistem akan auto-hantar peringatan pagi (6:30 / 11:45) dan rumusan akhir (10:00 / 15:00) ke group Telegram pada hari persekolahan.
+                        </p>
+                    </div>
+
+                    <!-- Schedule Info -->
+                    <div class="mt-3 space-y-1.5">
+                        <p class="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Jadual Notifikasi</p>
+                        <div class="grid grid-cols-2 gap-1.5 text-[10px]">
+                            <div class="bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                                <div class="flex items-center gap-1 font-bold text-amber-700"><i class="fa-solid fa-sun text-[9px]"></i> Sesi Pagi</div>
+                                <div class="text-amber-600">6:30 — Peringatan</div>
+                                <div class="text-amber-600">10:00 — Rumusan</div>
+                            </div>
+                            <div class="bg-indigo-50 border border-indigo-200 rounded-lg px-2 py-1.5">
+                                <div class="flex items-center gap-1 font-bold text-indigo-700"><i class="fa-solid fa-moon text-[9px]"></i> Sesi Petang</div>
+                                <div class="text-indigo-600">11:45 — Peringatan</div>
+                                <div class="text-indigo-600">15:00 — Rumusan</div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>

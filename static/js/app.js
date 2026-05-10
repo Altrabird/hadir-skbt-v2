@@ -957,7 +957,7 @@ function closeSettings() {
 
 function switchSettingsMode(mode) {
     _settingsMode = mode;
-    ["add", "remove"].forEach(m => {
+    ["add", "remove", "notif"].forEach(m => {
         const btn = document.getElementById(`settings-tab-${m}`);
         const content = document.getElementById(`settings-mode-${m}`);
         if (m === mode) {
@@ -968,7 +968,72 @@ function switchSettingsMode(mode) {
             content.classList.add("hidden");
         }
     });
-    loadSettingsStudents();
+
+    // Hide class selector for notif mode (not needed)
+    const classWrapper = document.getElementById("settings-class-wrapper");
+    if (classWrapper) {
+        classWrapper.classList.toggle("hidden", mode === "notif");
+    }
+
+    if (mode === "notif") {
+        loadNotifikasiStatus();
+    } else {
+        loadSettingsStudents();
+    }
+}
+
+async function loadNotifikasiStatus() {
+    const toggle = document.getElementById("notif-toggle");
+    const label = document.getElementById("notif-status-label");
+    label.textContent = "Memuatkan...";
+    toggle.disabled = true;
+    try {
+        const res = await apiFetch("/api/settings/notifikasi");
+        const d = await res.json();
+        toggle.checked = !!d.notifikasi;
+        label.textContent = d.notifikasi ? "Status: HIDUP — auto aktif" : "Status: MATI — auto dimatikan";
+        toggle.disabled = false;
+    } catch {
+        label.textContent = "Gagal memuatkan status.";
+    }
+}
+
+async function toggleNotifikasi() {
+    const toggle = document.getElementById("notif-toggle");
+    const label = document.getElementById("notif-status-label");
+    const enabled = toggle.checked;
+    const previous = !enabled;
+
+    const confirmMsg = enabled
+        ? "Hidupkan notifikasi auto Telegram?\n\nPeringatan dan rumusan akan dihantar mengikut jadual."
+        : "Matikan notifikasi auto Telegram?\n\nPeringatan dan rumusan TIDAK akan dihantar sehingga dihidupkan semula.";
+    if (!confirm(confirmMsg)) {
+        toggle.checked = previous;
+        return;
+    }
+
+    toggle.disabled = true;
+    label.textContent = "Mengemaskini...";
+    try {
+        const res = await apiFetch("/api/settings/notifikasi", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({enabled, teacher: _settingsTeacher}),
+        });
+        const d = await res.json();
+        if (d.success) {
+            label.textContent = enabled ? "Status: HIDUP — auto aktif" : "Status: MATI — auto dimatikan";
+            showToast(`Notifikasi auto Telegram telah ${enabled ? 'DIHIDUPKAN' : 'DIMATIKAN'}.`, "success");
+        } else {
+            toggle.checked = previous;
+            label.textContent = "Gagal mengemaskini.";
+        }
+    } catch {
+        toggle.checked = previous;
+        label.textContent = "Gagal mengemaskini.";
+    } finally {
+        toggle.disabled = false;
+    }
 }
 
 async function loadSettingsStudents() {

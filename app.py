@@ -791,6 +791,52 @@ def write_settings_log(teacher: str, action: str, details: str):
 
 
 # ---------------------------------------------------------------------------
+# API: Notification Toggle (Telegram on/off)
+# ---------------------------------------------------------------------------
+@app.route("/api/settings/notifikasi", methods=["GET"])
+def api_get_notifikasi():
+    """Return current notification status."""
+    try:
+        settings = load_bot_settings()
+        return jsonify({
+            "notifikasi": bool(settings.get("notifikasi", True)),
+            "admin_chat_id": str(settings.get("admin_chat_id", "")),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/settings/notifikasi", methods=["POST"])
+def api_set_notifikasi():
+    """Toggle notification on/off. JSON: {enabled: bool, teacher: str}"""
+    try:
+        payload = request.get_json()
+        if not payload:
+            return jsonify({"error": "No JSON body"}), 400
+
+        enabled = bool(payload.get("enabled", True))
+        teacher = str(payload.get("teacher", "")).strip()
+
+        settings = load_bot_settings()
+        settings["notifikasi"] = enabled
+        save_bot_settings(settings)
+
+        # Log to audit sheet
+        action = "Hidupkan Notifikasi" if enabled else "Matikan Notifikasi"
+        write_settings_log(teacher, action, "Telegram auto-update + peringatan")
+
+        # Notify admin via Telegram
+        admin_id = get_admin_chat_id()
+        if admin_id:
+            status = "HIDUP" if enabled else "MATI"
+            telegram_send(admin_id, f"Notifikasi auto telah ditukar ke <b>{status}</b> oleh {teacher} melalui Hadir@SKBT.")
+
+        return jsonify({"success": True, "notifikasi": enabled})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # API: Student Management (Add / Remove / Update RMT)
 # ---------------------------------------------------------------------------
 _student_mgmt_lock = threading.Lock()
