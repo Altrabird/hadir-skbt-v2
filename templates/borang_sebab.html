@@ -83,15 +83,15 @@
 
                 <div class="medan">
                     <label for="murid">Nama Murid</label>
-                    <select id="murid">
+                    <select id="murid" onchange="isiTarikh()">
                         <option value="">— Memuatkan senarai —</option>
                     </select>
                 </div>
 
                 <div class="medan">
                     <label for="tarikh">Tarikh Tidak Hadir</label>
-                    <input type="date" id="tarikh">
-                    <div class="bantuan">Pilih tarikh anak anda tidak hadir ke sekolah.</div>
+                    <select id="tarikh"><option value="">— Pilih nama murid dahulu —</option></select>
+                    <div class="bantuan" id="tarikh-bantuan">Tarikh diisi automatik daripada rekod sekolah.</div>
                 </div>
 
                 <div class="medan">
@@ -165,14 +165,46 @@ function ralat(msg) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
+let MURID = [];   // [{name, dates:[{date,label}]}]
+
+function isiTarikh() {
+    const nama = document.getElementById("murid").value;
+    const sel = document.getElementById("tarikh");
+    const bantuan = document.getElementById("tarikh-bantuan");
+    const murid = MURID.find(m => m.name === nama);
+
+    if (!murid) {
+        sel.innerHTML = '<option value="">— Pilih nama murid dahulu —</option>';
+        bantuan.textContent = "Tarikh diisi automatik daripada rekod sekolah.";
+        return;
+    }
+    // One outstanding date is the normal case — select it so there is nothing to fill in
+    sel.innerHTML = (murid.dates.length > 1 ? '<option value="">— Pilih tarikh —</option>' : "") +
+        murid.dates.map(d => `<option value="${d.date}">${d.label}</option>`).join("");
+    bantuan.textContent = murid.dates.length > 1
+        ? `${murid.dates.length} tarikh belum ada sebab. Hantar satu demi satu.`
+        : "Tarikh ini diambil daripada rekod kehadiran sekolah.";
+}
+
 async function muatMurid() {
     const sel = document.getElementById("murid");
     try {
         const res = await fetch(`/api/borang/${encodeURIComponent(TOKEN)}/murid`);
         const d = await res.json();
         if (d.error) { sel.innerHTML = '<option value="">— Ralat —</option>'; return ralat(d.error); }
+
+        MURID = d.students || [];
+        if (!MURID.length) {
+            document.getElementById("skrin-borang").style.display = "none";
+            document.getElementById("teks-jaya").textContent =
+                "Tiada ketidakhadiran yang memerlukan sebab buat masa ini. Terima kasih.";
+            document.getElementById("skrin-jaya").style.display = "block";
+            return;
+        }
         sel.innerHTML = '<option value="">— Pilih nama anak anda —</option>' +
-            d.students.map(n => `<option>${n}</option>`).join("");
+            MURID.map(m => `<option>${m.name}</option>`).join("");
+        // Only one child outstanding in the whole class — preselect it
+        if (MURID.length === 1) { sel.value = MURID[0].name; isiTarikh(); }
     } catch {
         sel.innerHTML = '<option value="">— Ralat sambungan —</option>';
     }
@@ -218,7 +250,6 @@ async function hantar() {
     }
 }
 
-document.getElementById("tarikh").max = new Date().toISOString().slice(0, 10);
 muatMurid();
 </script>
 {% endif %}

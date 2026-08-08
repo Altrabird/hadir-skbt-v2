@@ -2155,6 +2155,7 @@ def api_kelas_saya():
 # class, the month it was issued, and a per-class serial the school can bump to
 # kill a leaked link.
 BORANG_MAX_PER_HOUR = 40           # submissions per token per hour, per worker
+BORANG_TEMPOH_HARI = 90            # how far back the form offers absences
 _borang_hits: dict[str, list[float]] = {}
 
 # Parents pick from the excused reasons only — "no reason" is a finding the
@@ -2345,16 +2346,48 @@ def api_borang_pilihan(token: str):
 
 @app.route("/api/borang/<token>/murid")
 def api_borang_murid(token: str):
-    """Pupil names for the dropdown. Deliberately the whole class roster — the
-    list of who was absent is never exposed here."""
+    """Only the pupils who actually have an absence still needing a reason,
+    each with the exact dates.
+
+    The names are already listed in the message sent to the class group, so
+    withholding them here protected nothing while forcing a guardian to hunt
+    through the whole roster. Dates a teacher has already decided on are left
+    out — a guardian cannot change those anyway.
+    """
     class_name = verify_borang_token(token)
     if class_name is None:
         return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
     try:
-        students = get_data_from_sheet(SHEET_STUDENTS)
-        names = sorted(str(s["Name"]).strip() for s in students
-                       if str(s["Class"]).strip() == class_name)
-        return jsonify({"class": class_name, "students": names})
+        cutoff = (datetime.datetime.now(tz=TIMEZONE)
+                  - datetime.timedelta(days=BORANG_TEMPOH_HARI)).strftime("%Y-%m-%d")
+        sebab_index = build_sebab_index()
+
+        by_pupil: dict[str, set] = {}
+        for r in get_data_from_sheet(SHEET_ATTENDANCE):
+            if str(r.get("CLASS", "")).strip() != class_name:
+                continue
+            if str(r.get("STATUS", "")).strip() != STATUS_ABSENT:
+                continue
+            date_only = str(r.get("DATE", ""))[:10]
+            if not date_only or date_only < cutoff:
+                continue
+            name = str(r.get("NAME", "")).strip()
+            status = resolve_sebab_status(sebab_index.get((date_only, name.upper())))
+            if status in ("sah", "tidak_sah"):
+                continue
+            by_pupil.setdefault(name, set()).add(date_only)
+
+        students = [
+            {
+                "name": name,
+                "dates": [
+                    {"date": d, "label": format_malay_date(d)}
+                    for d in sorted(dates, reverse=True)
+                ],
+            }
+            for name, dates in sorted(by_pupil.items())
+        ]
+        return jsonify({"class": class_name, "students": students})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
