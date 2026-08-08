@@ -34,6 +34,11 @@
         }
         textarea { resize: vertical; min-height: 68px; }
         .bantuan { font-size: 11px; color: #6b7280; margin-top: 4px; }
+        .tarikh-tetap {
+            padding: 11px 12px; font-size: 15px; font-weight: 700;
+            border: 1px solid #bfdbfe; border-radius: 9px;
+            background: #eff6ff; color: #1e40af;
+        }
         button {
             width: 100%; padding: 13px; font-size: 15px; font-weight: 700; font-family: inherit;
             color: #fff; background: #4f46e5; border: none; border-radius: 9px; cursor: pointer;
@@ -90,8 +95,13 @@
 
                 <div class="medan">
                     <label for="tarikh">Tarikh Tidak Hadir</label>
+                    {% if tarikh %}
+                    <div class="tarikh-tetap">{{ tarikh_label }}</div>
+                    <div class="bantuan">Borang ini khusus untuk tarikh tersebut.</div>
+                    {% else %}
                     <select id="tarikh"><option value="">— Pilih nama murid dahulu —</option></select>
                     <div class="bantuan" id="tarikh-bantuan">Tarikh diisi automatik daripada rekod sekolah.</div>
+                    {% endif %}
                 </div>
 
                 <div class="medan">
@@ -134,7 +144,7 @@
                 <h2>Maklumat Diterima</h2>
                 <p id="teks-jaya"></p>
                 <p style="margin-top:14px">
-                    <a href="#" onclick="location.reload();return false;">Isi untuk tarikh atau anak yang lain</a>
+                    <a href="#" onclick="location.reload();return false;">Isi untuk {% if tarikh %}anak{% else %}tarikh atau anak{% endif %} yang lain</a>
                 </p>
             </div>
         </div>
@@ -146,6 +156,7 @@
 <script>
 const TOKEN = {{ token | tojson }};
 const KATEGORI = {{ kategori | tojson }};
+const TARIKH_TETAP = {{ tarikh | tojson }};
 
 function isiSubAlasan() {
     const kategori = document.getElementById("kategori").value;
@@ -168,6 +179,7 @@ function ralat(msg) {
 let MURID = [];   // [{name, dates:[{date,label}]}]
 
 function isiTarikh() {
+    if (TARIKH_TETAP) return;          // date is fixed by the link
     const nama = document.getElementById("murid").value;
     const sel = document.getElementById("tarikh");
     const bantuan = document.getElementById("tarikh-bantuan");
@@ -197,7 +209,9 @@ async function muatMurid() {
         if (!MURID.length) {
             document.getElementById("skrin-borang").style.display = "none";
             document.getElementById("teks-jaya").textContent =
-                "Tiada ketidakhadiran yang memerlukan sebab buat masa ini. Terima kasih.";
+                (TARIKH_TETAP
+                    ? "Semua sebab bagi tarikh ini sudah diterima dan disahkan oleh guru kelas. Terima kasih."
+                    : "Tiada ketidakhadiran yang memerlukan sebab buat masa ini. Terima kasih.");
             document.getElementById("skrin-jaya").style.display = "block";
             return;
         }
@@ -216,7 +230,7 @@ async function hantar() {
 
     const body = {
         name: document.getElementById("murid").value,
-        date: document.getElementById("tarikh").value,
+        date: TARIKH_TETAP || document.getElementById("tarikh").value,
         kategori: document.getElementById("kategori").value,
         sub_kategori: document.getElementById("sub").value,
         jenis_bukti: document.getElementById("bukti").value,

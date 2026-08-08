@@ -2199,22 +2199,31 @@ def _borang_periods() -> tuple[str, str]:
     return now.strftime("%Y-%m"), prev
 
 
-def make_borang_token(class_name: str, period: str | None = None) -> str:
-    """Signed link body: class + serial, with the period folded into the
-    signature rather than carried in the URL, to keep it short."""
+def make_borang_token(class_name: str, period: str | None = None,
+                      date_str: str = "") -> str:
+    """Signed link body: class + serial + the date the message was about.
+
+    The date is bound into the token so the form can be pinned to exactly the
+    day the teacher announced; without it a guardian is shown every outstanding
+    absence in the class. The period is folded into the signature rather than
+    carried in the body, to keep the token short.
+    """
     period = period or _borang_periods()[0]
     siri = get_borang_siri(class_name)
-    body = f"{class_name}|{siri}"
+    body = f"{class_name}|{siri}|{date_str}"
     encoded = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
-    return f"{encoded}.{_borang_sign(f'{class_name}|{period}|{siri}')}"
+    return f"{encoded}.{_borang_sign(f'{class_name}|{period}|{siri}|{date_str}')}"
 
 
-def verify_borang_token(token: str) -> str | None:
-    """Return the class name if the token is valid and unexpired, else None."""
+def verify_borang_token(token: str) -> tuple[str, str] | None:
+    """Return (class_name, date) if valid, else None. date is "" for a
+    class-wide link — the shape issued before dates were bound in."""
     try:
         encoded, sig = str(token).split(".", 1)
         padding = "=" * (-len(encoded) % 4)
-        class_name, siri = base64.urlsafe_b64decode(encoded + padding).decode().split("|")
+        parts = base64.urlsafe_b64decode(encoded + padding).decode().split("|")
+        class_name, siri = parts[0], parts[1]
+        date_str = parts[2] if len(parts) > 2 else ""
     except Exception:
         return None
 
@@ -2224,8 +2233,8 @@ def verify_borang_token(token: str) -> str | None:
     # The period is not in the URL, so try each one the link may have been
     # issued in; a match proves both the signature and the period.
     for period in _borang_periods():
-        if hmac.compare_digest(sig, _borang_sign(f"{class_name}|{period}|{siri}")):
-            return class_name
+        if hmac.compare_digest(sig, _borang_sign(f"{class_name}|{period}|{siri}|{date_str}")):
+            return class_name, date_str
     return None
 
 
@@ -2253,46 +2262,61 @@ def _borang_kod_map() -> dict:
     return load_bot_settings().get("borang_kod") or {}
 
 
-def get_borang_kod(class_name: str) -> str:
-    """Return this class's current short code, creating one if needed.
+def get_borang_kod(class_name: str, date_str: str = "") -> str:
+    """Short code for one class on one date, creating it if needed.
 
-    Codes are tied to the class's serial, so 'Jana Pautan Baharu' retires the
-    old code along with the old token.
+    One code per (class, date) so each message the teacher sends points at the
+    day it is about. Codes are tied to the class's serial, so 'Jana Pautan
+    Baharu' retires them along with the old token.
     """
     siri = get_borang_siri(class_name)
     settings = load_bot_settings()
     kod_map = settings.setdefault("borang_kod", {})
 
     for kod, meta in kod_map.items():
-        if meta.get("class") == class_name and int(meta.get("siri", 0)) == siri:
+        if (meta.get("class") == class_name
+                and str(meta.get("date", "")) == date_str
+                and int(meta.get("siri", 0)) == siri):
             return kod
 
-    # Drop any stale codes for this class, then mint a fresh one
-    for kod in [k for k, m in kod_map.items() if m.get("class") == class_name]:
+    # Retire this class's codes from earlier serials, and drop codes issued long
+    # enough ago to be finished with, so the settings file stays small.
+    # Pruning must key on when the CODE was issued, not on the absence date — a
+    # teacher may legitimately send a message about a day months in the past,
+    # and that fresh link must not be swept away by the next one minted.
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    cutoff = (datetime.datetime.now(tz=TIMEZONE)
+              - datetime.timedelta(days=BORANG_TEMPOH_HARI)).strftime("%Y-%m-%d")
+    for kod in [
+        k for k, m in kod_map.items()
+        if (m.get("class") == class_name and int(m.get("siri", 0)) != siri)
+        or (m.get("created") and str(m["created"]) < cutoff)
+    ]:
         kod_map.pop(kod, None)
 
     while True:
         kod = "".join(secrets.choice(BORANG_KOD_ALPHABET) for _ in range(BORANG_KOD_LENGTH))
         if kod not in kod_map:
             break
-    kod_map[kod] = {"class": class_name, "siri": siri}
+    kod_map[kod] = {"class": class_name, "date": date_str, "siri": siri,
+                    "created": today}
     save_bot_settings(settings)
     return kod
 
 
-def resolve_borang_kod(kod: str) -> str | None:
-    """Class name for a short code, or None if unknown or retired."""
+def resolve_borang_kod(kod: str) -> tuple[str, str] | None:
+    """(class, date) for a short code, or None if unknown or retired."""
     meta = _borang_kod_map().get(str(kod).strip().upper())
     if not meta:
         return None
     class_name = meta.get("class", "")
     if int(meta.get("siri", 0)) != get_borang_siri(class_name):
         return None
-    return class_name
+    return class_name, str(meta.get("date", ""))
 
 
-def borang_short_url(class_name: str) -> str:
-    return f"{borang_base()}/s/{get_borang_kod(class_name)}"
+def borang_short_url(class_name: str, date_str: str = "") -> str:
+    return f"{borang_base()}/s/{get_borang_kod(class_name, date_str)}"
 
 
 def _borang_rate_ok(token: str) -> bool:
@@ -2310,27 +2334,31 @@ def _borang_rate_ok(token: str) -> bool:
 def page_borang_pendek(kod: str):
     """Short link shared with parents. Resolves to the class, then renders the
     same form — the long signed token stays server-side."""
-    class_name = resolve_borang_kod(kod)
-    if class_name is None:
+    resolved = resolve_borang_kod(kod)
+    if resolved is None:
         return render_template("borang_sebab.html", invalid=True,
                                school=SCHOOL_NAME, class_name="", token="")
-    return page_borang_waris(make_borang_token(class_name))
+    class_name, date_str = resolved
+    return page_borang_waris(make_borang_token(class_name, date_str=date_str))
 
 
 @app.route("/b/<token>")
 @app.route("/borang/<token>")   # long form kept working for links already shared
 def page_borang_waris(token: str):
     """Public form for guardians. No login — the signed link is the credential."""
-    class_name = verify_borang_token(token)
-    if class_name is None:
+    resolved = verify_borang_token(token)
+    if resolved is None:
         return render_template("borang_sebab.html", invalid=True,
                                school=SCHOOL_NAME, class_name="", token=token)
+    class_name, date_str = resolved
     return render_template(
         "borang_sebab.html",
         invalid=False,
         school=SCHOOL_NAME,
         class_name=class_name,
         token=token,
+        tarikh=date_str,
+        tarikh_label=format_malay_date(date_str) if date_str else "",
         kategori=SEBAB_KATEGORI_WARIS,
         jenis_bukti=SEBAB_JENIS_BUKTI,
     )
@@ -2344,6 +2372,11 @@ def api_borang_pilihan(token: str):
     return jsonify({"kategori": SEBAB_KATEGORI_WARIS})
 
 
+def _borang_token_scope(token: str):
+    """(class, pinned_date) for a token, or None."""
+    return verify_borang_token(token)
+
+
 @app.route("/api/borang/<token>/murid")
 def api_borang_murid(token: str):
     """Only the pupils who actually have an absence still needing a reason,
@@ -2354,9 +2387,10 @@ def api_borang_murid(token: str):
     through the whole roster. Dates a teacher has already decided on are left
     out — a guardian cannot change those anyway.
     """
-    class_name = verify_borang_token(token)
-    if class_name is None:
+    resolved = verify_borang_token(token)
+    if resolved is None:
         return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
+    class_name, pinned_date = resolved
     try:
         cutoff = (datetime.datetime.now(tz=TIMEZONE)
                   - datetime.timedelta(days=BORANG_TEMPOH_HARI)).strftime("%Y-%m-%d")
@@ -2369,7 +2403,14 @@ def api_borang_murid(token: str):
             if str(r.get("STATUS", "")).strip() != STATUS_ABSENT:
                 continue
             date_only = str(r.get("DATE", ""))[:10]
-            if not date_only or date_only < cutoff:
+            if not date_only:
+                continue
+            # A dated link shows exactly the day the teacher announced — the
+            # rolling window must not hide it, however long ago that was.
+            if pinned_date:
+                if date_only != pinned_date:
+                    continue
+            elif date_only < cutoff:
                 continue
             name = str(r.get("NAME", "")).strip()
             status = resolve_sebab_status(sebab_index.get((date_only, name.upper())))
@@ -2395,9 +2436,10 @@ def api_borang_murid(token: str):
 @app.route("/api/borang/<token>", methods=["POST"])
 def api_borang_submit(token: str):
     """Guardian submits a reason. Always lands as 'Belum Disahkan'."""
-    class_name = verify_borang_token(token)
-    if class_name is None:
+    resolved = verify_borang_token(token)
+    if resolved is None:
         return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
+    class_name, pinned_date = resolved
     if not _borang_rate_ok(token):
         return jsonify({
             "error": "Terlalu banyak hantaran buat masa ini. Sila cuba sebentar lagi."
@@ -2420,6 +2462,11 @@ def api_borang_submit(token: str):
             return jsonify({"error": "Sila isikan nama anda (ibu bapa/penjaga)."}), 400
         if not _valid_date(date_str):
             return jsonify({"error": "Tarikh tidak sah."}), 400
+        # A dated link may only be used for its own date
+        if pinned_date and date_str != pinned_date:
+            return jsonify({
+                "error": f"Pautan ini hanya untuk {format_malay_date(pinned_date)}."
+            }), 400
         if kategori not in SEBAB_KATEGORI_WARIS:
             return jsonify({"error": "Sila pilih kategori sebab."}), 400
         subs = SEBAB_KATEGORI_WARIS[kategori]
@@ -2537,7 +2584,8 @@ def api_kelas_borang(class_name: str):
         absent = sorted(set(by_date.get(date_str, [])))
         recorded = date_str in marked_dates
 
-        url = borang_short_url(class_name)
+        # Link is bound to this date, so the form opens on exactly these pupils
+        url = borang_short_url(class_name, date_str)
         tajuk = f"*Kehadiran {class_name} — {format_malay_date(date_str)}*"
 
         if absent:
