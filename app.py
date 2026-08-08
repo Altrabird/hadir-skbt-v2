@@ -4,9 +4,13 @@ Flask backend with Google Sheets integration.
 """
 
 import io
+import base64
 import datetime
 import calendar
+import hashlib
+import hmac
 import logging
+import secrets
 import threading
 import contextlib
 from zoneinfo import ZoneInfo
@@ -18,7 +22,8 @@ try:
 except ImportError:
     _HAS_FCNTL = False
 
-from flask import Flask, render_template, jsonify, request, Response
+from flask import Flask, render_template, jsonify, request, Response, session
+from werkzeug.middleware.proxy_fix import ProxyFix
 import gspread
 import pandas as pd
 import requests as http_requests
@@ -35,6 +40,24 @@ load_dotenv()
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "change-me-in-production")
 
+# Behind nginx, Flask otherwise sees the plain-HTTP hop to gunicorn and builds
+# links as http://127.0.0.1:5000/... — wrong in any message sent to parents.
+# nginx already sets X-Forwarded-Proto / X-Forwarded-Host; trust one hop.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+# Definitive public address for links we hand out. Set this in .env — it is the
+# only value that cannot be got wrong by a proxy misconfiguration.
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+
+# Signed-cookie sessions carry the logged-in teacher. Set SESSION_COOKIE_SECURE=1
+# in production (behind HTTPS); left off by default so local HTTP testing works.
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "") == "1",
+    PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12),
+)
+
 SPREADSHEET_URL = os.getenv(
     "SPREADSHEET_URL",
     "https://docs.google.com/spreadsheets/d/1CiS8GhmhsDtOxZP0L3ZDmQDiA3DTbc1R0mQRQOfe1qY/edit#gid=237821847",
@@ -48,9 +71,149 @@ SHEET_STUDENTS = "Students"
 SHEET_RMT = "RMT"
 SHEET_ATTENDANCE = "Sheet1"
 SHEET_LOG = "REKOD LOG TETAPAN"
+SHEET_SEBAB = "SEBAB"
+
+# Absence reason ledger — append-only, never written into SHEET_ATTENDANCE
+# (attendance rows for a date+class are deleted and rewritten on every submit,
+#  so any reason stored there would be wiped by the next correction).
+SEBAB_HEADER = [
+    "DATE", "NAME", "CLASS", "KATEGORI", "SUB_KATEGORI", "CATATAN",
+    "JENIS_BUKTI", "RUJUKAN_BUKTI", "STATUS_SAH", "DIREKOD_OLEH",
+    "DIREKOD_PADA", "SUMBER",
+]
+
+# Where a ledger row came from. Parent submissions are claims, not proof —
+# they always land as SAH_BELUM and a teacher verifies against the document.
+SUMBER_GURU = "Guru"
+SUMBER_WARIS = "Borang Waris"
+
+# Absence reasons follow the KPM IDME / MOEIS-PELAJAR categories so the school
+# can key the same values into MOEIS without re-mapping.
+#   ponteng — counts toward the surat amaran ladder
+#   waris   — a guardian may select it on the public form
+SEBAB_KATEGORI = {
+    "Aktiviti luar sekolah": {"ponteng": False, "waris": False, "sub": [
+        "Wakil sekolah",
+    ]},
+    "Ancaman keselamatan": {"ponteng": False, "waris": True, "sub": [
+        "Binatang liar/buas/berbisa", "Diculik", "Gangguan mistik/makluk halus",
+        "Gangguan kumpulan kongsi gelap", "Kebakaran", "Pengganas/lanun",
+        "Rusuhan di luar kawasan sekolah", "Ugutan daripada pihak luar",
+        "Mangsa buli", "Mangsa seksual", "Tidak dapat dikesan/hilang",
+    ]},
+    "Bencana alam": {"ponteng": False, "waris": True, "sub": [
+        "Jerebu", "Kemalangan", "Banjir", "Gempa bumi",
+        "Hujan lebat/ribut taufan", "Pencemaran udara", "Kemarau",
+        "Cuaca panas El Nino", "Pencemaran sisa kimia", "Pencemaran alam",
+        "Tanah runtuh",
+    ]},
+    # School-imposed, so never a truancy warning — see notes in the UI.
+    "Digantung sekolah": {"ponteng": False, "waris": False, "sub": [
+        "Digantung sekolah",
+    ]},
+    "Masalah keluarga": {"ponteng": False, "waris": True, "sub": [
+        "Bekerja", "Berpindah randah", "Perebutan hak penjagaan anak",
+        "Mengikut keluarga bercuti/berkursus", "Menjaga/menguruskan ahli keluarga",
+        "Menjaga ahli keluarga yang sakit", "Kematian ahli keluarga terdekat",
+        "Kemiskinan/kesempitan hidup", "Masalah pengangkutan",
+        "Menziarahi keluarga sakit", "Balik kampung", "Berpindah ke luar negara",
+        "Krisis keluarga", "Lari dari rumah",
+    ]},
+    "Masalah peribadi": {"ponteng": False, "waris": True, "sub": [
+        "Tekanan perasaan/trauma", "Kesakitan akibat haid/permulaan haid",
+    ]},
+    "PDPR": {"ponteng": False, "waris": False, "sub": [
+        "Pembelajaran di rumah",
+    ]},
+    "Penggiliran peperiksaan": {"ponteng": False, "waris": False, "sub": [
+        "Urusan peperiksaan",
+    ]},
+    "Kebenaran Pengetua/Guru Besar": {"ponteng": False, "waris": False, "sub": [
+        "Haji/umrah/kegiatan agama", "Peperiksaaan/ujian selain KPM",
+        "Pertandingan/aktiviti selain KPM", "Proses perpindahan sekolah",
+        "Terlibat kes jenayah", "Terlibat kes trafik",
+        "Urusan rasmi agensi kerajaan", "Latihan/ujian lesen memandu",
+        "Tahanan pihak berkuasa", "Terlibat prosiding mahkamah",
+        "Perlindungan jabatan kebajikan masyarakat", "Cuti semester",
+        "Menjalani latihan industri",
+    ]},
+    "Ponteng": {"ponteng": True, "waris": False, "sub": [
+        "Bangun lewat", "Malas ke sekolah", "Ketagihan gajet",
+        "Tidak menyiapkan kerja sekolah", "Malas ke aktiviti kokurikulum",
+    ]},
+    "Masalah kesihatan": {"ponteng": False, "waris": True, "sub": [
+        "Makluman ibu bapa penjaga", "Kecederaan/patah tulang",
+        "Surat cuti sakit hospital/klinik", "Imunisasi rendah", "Demam",
+        "Tantrum (MBK)", "Temujanji hospital/klinik",
+        "Menjalani terapi/rawatan/kuarantin",
+        "Tidak melepasi saringan kesihatan (MBK)",
+        "Mendapatkan rawatan tradisional", "Kemurungan", "Batuk kokol",
+        "Beguk", "Cacar air", "Chikungunya", "Covid 19 bergejala",
+        "Covid 19 dengan kebenaran ibu bapa", "Covid 19 kuarantin",
+        "Covid 19 penggiliran", "Denggi", "Swine Flue (H1N1)", "Hepatitis",
+        "Hand, Foot and Mouth Disease (HFMD)", "Influenza",
+        "Japanese Encephalitis", "Leptospirosis (penyakit kencing tikus)",
+        "Kudis buta", "Malaria", "Mers COV", "Sars", "Taun", "Tibi",
+        "Sakit Mistik", "Sakit mental", "Tekanan emosi",
+    ]},
+    "Sekolah dalam hospital": {"ponteng": False, "waris": False, "sub": [
+        "Sekolah dalam hospital",
+    ]},
+}
+
+
+def kategori_is_ponteng(kategori: str) -> bool:
+    entry = SEBAB_KATEGORI.get(str(kategori).strip())
+    return bool(entry and entry["ponteng"])
+
+
+def sub_kategori_for(kategori: str) -> list[str]:
+    entry = SEBAB_KATEGORI.get(str(kategori).strip())
+    return list(entry["sub"]) if entry else []
+
+# Verification states for a recorded reason
+SAH_BELUM = "Belum Disahkan"
+SAH_YA = "Sah"
+SAH_TIDAK = "Tidak Sah"
+SAH_OPTIONS = (SAH_BELUM, SAH_YA, SAH_TIDAK)
+
+# Warning letters live in their own tab, NOT in SEBAB: build_sebab_index() keys
+# on (date, pupil), so a letter row would be read back as a reason for whatever
+# absence fell on its issue date.
+SHEET_AMARAN = "AMARAN"
+AMARAN_HEADER = [
+    "TARIKH_KELUAR", "NAME", "CLASS", "TAHAP", "JUMLAH_PONTENG",
+    "DIREKOD_OLEH", "CATATAN",
+]
+
+# Unexcused-absence count at which each escalation step is reached.
+# Defaults follow the common 3/7/10/20 pattern — the school should confirm the
+# figures against its current KPM circular and override them in settings.
+AMARAN_DEFAULT_THRESHOLDS = {"1": 3, "2": 7, "3": 10, "4": 20}
+AMARAN_LABELS = {
+    1: "Surat Amaran Pertama",
+    2: "Surat Amaran Kedua",
+    3: "Surat Amaran Ketiga / Panggilan Waris",
+    4: "Rujuk PK HEM",
+}
+SCHOOL_NAME = os.getenv("SCHOOL_NAME", "SEKOLAH KEBANGSAAN BANDAR TAWAU")
+
+# Proof types — Tier A: the school keeps the physical document, we record the
+# reference to it. No file upload, no storage.
+SEBAB_JENIS_BUKTI = [
+    "Slip klinik / hospital",
+    "Surat doktor (MC)",
+    "Surat ibu bapa / waris",
+    "Surat sekolah",
+    "Panggilan telefon waris",
+    "Tiada bukti",
+]
 
 # Settings password
-SETTINGS_PASSWORD = "xba3051"
+# This repository is public, so the literal below is readable by anyone and must
+# be treated as compromised. Set SETTINGS_PASSWORD in .env to override it; the
+# fallback exists only so an un-updated deployment keeps working.
+SETTINGS_PASSWORD = os.getenv("SETTINGS_PASSWORD", "xba3051")
 
 # Status constants
 STATUS_PRESENT = "Present"
@@ -122,6 +285,95 @@ def invalidate_cache(sheet_name: str | None = None):
         _sheet_cache.pop(sheet_name, None)
     else:
         _sheet_cache.clear()
+
+
+# ---------------------------------------------------------------------------
+# Teacher directory & access control
+# ---------------------------------------------------------------------------
+# Column A of SHEET_LOG holds teacher names (already the app's teacher list).
+# Column B holds their class assignment:
+#   "2 KRITIS"            -> guru kelas for that one class
+#   "2 KRITIS, 3 KREATIF" -> more than one class
+#   "SEMUA"               -> school-wide access (Guru Besar / PK HEM)
+#   empty                 -> no access to absence records until assigned
+TEACHER_ROLE_ALL = "SEMUA"
+_TEACHER_CACHE_KEY = "__teachers__"
+
+
+def get_teacher_directory() -> dict[str, dict]:
+    """Return {TEACHER_NAME_UPPER: {name, classes, is_admin}}, cached."""
+    now = datetime.datetime.now(tz=TIMEZONE).timestamp()
+    cached = _sheet_cache.get(_TEACHER_CACHE_KEY)
+    if cached and now - cached[1] < _CACHE_TTL:
+        return cached[0]
+
+    client = get_spreadsheet_client()
+    spreadsheet = client.open_by_url(SPREADSHEET_URL)
+    ws = spreadsheet.worksheet(SHEET_LOG)
+    rows = ws.get_values("A2:B1000")
+
+    directory: dict[str, dict] = {}
+    for row in rows:
+        name = (row[0] if len(row) > 0 else "").strip()
+        if not name:
+            continue
+        assignment = (row[1] if len(row) > 1 else "").strip()
+        is_admin = assignment.upper() == TEACHER_ROLE_ALL
+        classes = [] if is_admin else [
+            c.strip() for c in assignment.split(",") if c.strip()
+        ]
+        directory[name.upper()] = {
+            "name": name,
+            "classes": classes,
+            "is_admin": is_admin,
+        }
+
+    _sheet_cache[_TEACHER_CACHE_KEY] = (directory, now)
+    return directory
+
+
+def invalidate_teacher_cache():
+    _sheet_cache.pop(_TEACHER_CACHE_KEY, None)
+
+
+def current_teacher() -> dict | None:
+    """Logged-in teacher, re-read from the directory so that changed or revoked
+    assignments take effect without waiting for the session to expire."""
+    name = session.get("teacher")
+    if not name:
+        return None
+    return get_teacher_directory().get(str(name).strip().upper())
+
+
+def require_teacher():
+    """Return (info, None) when logged in, else (None, error_response)."""
+    info = current_teacher()
+    if info is None:
+        return None, (jsonify({"error": "Sila log masuk untuk mengakses rekod ini."}), 401)
+    return info, None
+
+
+def allowed_classes_for(info: dict) -> list[str] | None:
+    """Classes this teacher may see. None means every class."""
+    return None if info["is_admin"] else list(info["classes"])
+
+
+def class_denied(info: dict, class_name: str):
+    """Return an error response if this teacher may not see the class."""
+    if info["is_admin"] or class_name in info["classes"]:
+        return None
+    if not info["classes"]:
+        return jsonify({
+            "error": "Anda belum ditetapkan sebagai guru kelas. "
+                     "Sila hubungi pentadbir sistem."
+        }), 403
+    return jsonify({
+        "error": f"Anda hanya dibenarkan mengakses kelas: {', '.join(info['classes'])}."
+    }), 403
+
+
+def directory_has_admin() -> bool:
+    return any(t["is_admin"] for t in get_teacher_directory().values())
 
 
 def get_session(class_name: str) -> str:
@@ -767,7 +1019,150 @@ def api_settings_login():
     if password != SETTINGS_PASSWORD:
         return jsonify({"error": "Kata laluan salah"}), 403
 
-    return jsonify({"success": True, "teacher": teacher})
+    try:
+        directory = get_teacher_directory()
+    except Exception as e:
+        return jsonify({"error": f"Gagal membaca senarai guru: {e}"}), 500
+
+    info = directory.get(teacher.upper())
+    if info is None:
+        return jsonify({"error": "Nama guru tidak dijumpai dalam senarai"}), 403
+
+    session.permanent = True
+    session["teacher"] = info["name"]
+
+    return jsonify({
+        "success": True,
+        "teacher": info["name"],
+        "classes": info["classes"],
+        "is_admin": info["is_admin"],
+        "can_manage_teachers": info["is_admin"] or not directory_has_admin(),
+    })
+
+
+@app.route("/api/settings/logout", methods=["POST"])
+def api_settings_logout():
+    session.pop("teacher", None)
+    return jsonify({"success": True})
+
+
+@app.route("/api/settings/whoami")
+def api_whoami():
+    """Current session identity — lets the UI restore state after a reload."""
+    info = current_teacher()
+    if info is None:
+        return jsonify({"logged_in": False})
+    try:
+        can_manage = info["is_admin"] or not directory_has_admin()
+    except Exception:
+        can_manage = info["is_admin"]
+    return jsonify({
+        "logged_in": True,
+        "teacher": info["name"],
+        "classes": info["classes"],
+        "is_admin": info["is_admin"],
+        "can_manage_teachers": can_manage,
+    })
+
+
+@app.route("/api/settings/guru")
+def api_list_guru():
+    """Teacher list with class assignments. Requires login."""
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        directory = get_teacher_directory()
+        students = get_data_from_sheet(SHEET_STUDENTS)
+        all_classes = sorted({row["Class"] for row in students})
+        return jsonify({
+            "teachers": [
+                {
+                    "name": t["name"],
+                    "classes": t["classes"],
+                    "is_admin": t["is_admin"],
+                }
+                for t in sorted(directory.values(), key=lambda x: x["name"])
+            ],
+            "all_classes": all_classes,
+            "can_manage": info["is_admin"] or not directory_has_admin(),
+            "has_admin": directory_has_admin(),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/settings/guru", methods=["POST"])
+def api_set_guru():
+    """Assign classes to a teacher. JSON: {teacher, classes: [...] | "SEMUA"}
+
+    Only an admin may reassign. Bootstrap exception: while no admin exists yet,
+    any logged-in teacher may set assignments — otherwise a fresh install could
+    never appoint its first admin. Assign one immediately.
+    """
+    actor, err = require_teacher()
+    if err:
+        return err
+    try:
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Data permintaan tidak sah"}), 400
+
+        if not actor["is_admin"] and directory_has_admin():
+            return jsonify({
+                "error": "Hanya pentadbir (SEMUA) boleh menetapkan guru kelas."
+            }), 403
+
+        target = str(payload.get("teacher", "")).strip()
+        if not target:
+            return jsonify({"error": "Sila pilih nama guru"}), 400
+
+        directory = get_teacher_directory()
+        entry = directory.get(target.upper())
+        if entry is None:
+            return jsonify({"error": "Nama guru tidak dijumpai dalam senarai"}), 404
+
+        raw = payload.get("classes")
+        if isinstance(raw, str) and raw.strip().upper() == TEACHER_ROLE_ALL:
+            assignment = TEACHER_ROLE_ALL
+        else:
+            if not isinstance(raw, list):
+                return jsonify({"error": "Senarai kelas tidak sah"}), 400
+            students = get_data_from_sheet(SHEET_STUDENTS)
+            valid = {row["Class"] for row in students}
+            chosen = []
+            for c in raw:
+                c = str(c).strip()
+                if not c:
+                    continue
+                if c not in valid:
+                    return jsonify({"error": f"Kelas tidak sah: {c}"}), 400
+                if c not in chosen:
+                    chosen.append(c)
+            assignment = ", ".join(chosen)
+
+        # Locate the teacher's row in column A and write column B beside it
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = spreadsheet.worksheet(SHEET_LOG)
+        names = ws.col_values(1)
+        row_idx = None
+        for i, name in enumerate(names[1:], start=2):
+            if name.strip().upper() == target.upper():
+                row_idx = i
+                break
+        if row_idx is None:
+            return jsonify({"error": "Nama guru tidak dijumpai dalam senarai"}), 404
+
+        ws.update(f"B{row_idx}", [[assignment]])
+        invalidate_teacher_cache()
+        write_settings_log(
+            actor["name"], "Tetapan Guru Kelas",
+            f"{entry['name']} → {assignment or '(tiada)'}",
+        )
+        return jsonify({"success": True, "teacher": entry["name"], "assignment": assignment})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 def write_settings_log(teacher: str, action: str, details: str):
@@ -1509,6 +1904,1258 @@ def api_summary_class(class_name: str):
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Absence reason ledger (SEBAB) — read helpers
+# ---------------------------------------------------------------------------
+def get_sebab_records() -> list[dict]:
+    """Fetch the SEBAB ledger.
+
+    Tolerates the tab not existing yet: the report then simply shows every
+    absence as 'Tiada Sebab'. The empty result is cached like any other sheet
+    so a missing tab doesn't cost an API call on every request.
+    """
+    try:
+        return get_data_from_sheet(SHEET_SEBAB)
+    except gspread.WorksheetNotFound:
+        now = datetime.datetime.now(tz=TIMEZONE).timestamp()
+        _sheet_cache[SHEET_SEBAB] = ([], now)
+        return []
+
+
+def build_sebab_index() -> dict[tuple[str, str], dict]:
+    """Return the latest reason entry per (date, pupil).
+
+    The ledger is append-only — a correction is a new row, so the last matching
+    row wins and the earlier ones remain as history.
+    """
+    index: dict[tuple[str, str], dict] = {}
+    for row in get_sebab_records():
+        date_only = _get_col(row, "DATE", "TARIKH")[:10]
+        name = _get_col(row, "NAME", "NAMA")
+        if not date_only or not name:
+            continue
+        index[(date_only, name.strip().upper())] = {
+            "kategori": _get_col(row, "KATEGORI"),
+            "sub_kategori": _get_col(row, "SUB_KATEGORI"),
+            "catatan": _get_col(row, "CATATAN"),
+            "jenis_bukti": _get_col(row, "JENIS_BUKTI"),
+            "rujukan_bukti": _get_col(row, "RUJUKAN_BUKTI"),
+            "status_sah": _get_col(row, "STATUS_SAH") or SAH_BELUM,
+            "direkod_oleh": _get_col(row, "DIREKOD_OLEH"),
+            "direkod_pada": _get_col(row, "DIREKOD_PADA"),
+            "sumber": _get_col(row, "SUMBER") or SUMBER_GURU,
+        }
+    return index
+
+
+def resolve_sebab_status(entry: dict | None) -> str:
+    """Collapse a ledger entry into one of four report states."""
+    if entry is None:
+        return "tiada_sebab"
+    status = entry.get("status_sah") or SAH_BELUM
+    if status == SAH_YA:
+        return "sah"
+    if status == SAH_TIDAK:
+        return "tidak_sah"
+    return "belum_disahkan"
+
+
+def counts_as_ponteng(status: str, entry: dict | None) -> bool:
+    """Does this absence count toward the surat amaran ladder?
+
+    Only a teacher-verified excuse clears a day. An unverified reason — including
+    one a guardian submitted through the public form — keeps counting, otherwise
+    anyone could reduce a pupil's truancy tally just by typing a reason.
+
+    A confirmed "Ponteng" is verified *and* truancy, so the IDME category
+    overrides verification in the other direction.
+    """
+    if entry and kategori_is_ponteng(entry.get("kategori", "")):
+        return True
+    return status != "sah"
+
+
+def _valid_date(value: str) -> bool:
+    try:
+        datetime.datetime.strptime(value, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+
+def build_ketidakhadiran(class_name: str, date_from: str, date_to: str) -> dict:
+    """Build the per-class absence record joining attendance with the reason ledger."""
+    students = get_data_from_sheet(SHEET_STUDENTS)
+    session = get_session(class_name)
+    enrolled = {str(s["Name"]).strip().upper() for s in students if s["Class"] == class_name}
+
+    empty = {
+        "class": class_name,
+        "session": session,
+        "from": date_from,
+        "to": date_to,
+        "total_absences": 0,
+        "total_pupils": 0,
+        "school_days": 0,
+        "counts": {"tiada_sebab": 0, "belum_disahkan": 0, "sah": 0, "tidak_sah": 0},
+        "total_ponteng": 0,
+        "pupils": [],
+    }
+
+    records = get_data_from_sheet(SHEET_ATTENDANCE)
+    if not records:
+        return empty
+
+    df = pd.DataFrame(records)
+    df.columns = [c.upper() for c in df.columns]
+    class_df = df[df["CLASS"] == class_name].copy()
+    if class_df.empty:
+        return empty
+
+    class_df["DATE_ONLY"] = class_df["DATE"].astype(str).str[:10]
+    if date_from:
+        class_df = class_df[class_df["DATE_ONLY"] >= date_from]
+    if date_to:
+        class_df = class_df[class_df["DATE_ONLY"] <= date_to]
+    if class_df.empty:
+        return empty
+
+    # Dedup re-submissions: latest row per pupil per day wins
+    class_df = class_df.sort_values("DATE", ascending=True)
+    class_df["NAME_KEY"] = class_df["NAME"].astype(str).str.strip().str.upper()
+    class_df = class_df.drop_duplicates(subset=["NAME_KEY", "DATE_ONLY"], keep="last")
+
+    school_days = int(class_df["DATE_ONLY"].nunique())
+    absent_df = class_df[class_df["STATUS"] == STATUS_ABSENT]
+    if absent_df.empty:
+        empty["school_days"] = school_days
+        return empty
+
+    sebab_index = build_sebab_index()
+    counts = {"tiada_sebab": 0, "belum_disahkan": 0, "sah": 0, "tidak_sah": 0}
+    by_pupil: dict[str, dict] = {}
+
+    for _, row in absent_df.iterrows():
+        name = str(row["NAME"]).strip()
+        name_key = str(row["NAME_KEY"])
+        date_only = str(row["DATE_ONLY"])
+        entry = sebab_index.get((date_only, name_key))
+        status = resolve_sebab_status(entry)
+        counts[status] += 1
+
+        pupil = by_pupil.setdefault(name_key, {
+            "name": name,
+            "still_enrolled": name_key in enrolled,
+            "total": 0,
+            "ponteng": 0,
+            "counts": {"tiada_sebab": 0, "belum_disahkan": 0, "sah": 0, "tidak_sah": 0},
+            "records": [],
+        })
+        pupil["total"] += 1
+        pupil["counts"][status] += 1
+        is_ponteng = counts_as_ponteng(status, entry)
+        if is_ponteng:
+            pupil["ponteng"] += 1
+
+        pupil["records"].append({
+            "date": date_only,
+            "date_label": format_malay_date(date_only),
+            "status": status,
+            "kira_ponteng": is_ponteng,
+            "kategori": entry["kategori"] if entry else "",
+            "sub_kategori": entry["sub_kategori"] if entry else "",
+            "catatan": entry["catatan"] if entry else "",
+            "jenis_bukti": entry["jenis_bukti"] if entry else "",
+            "rujukan_bukti": entry["rujukan_bukti"] if entry else "",
+            "status_sah": entry["status_sah"] if entry else "",
+            "direkod_oleh": entry["direkod_oleh"] if entry else "",
+            "direkod_pada": entry["direkod_pada"] if entry else "",
+            "sumber": entry["sumber"] if entry else "",
+        })
+
+    pupils = list(by_pupil.values())
+    for p in pupils:
+        p["records"].sort(key=lambda r: r["date"], reverse=True)
+    # Worst first: most unexcused, then most absences, then name
+    pupils.sort(key=lambda p: (-p["ponteng"], -p["total"], p["name"]))
+
+    return {
+        "class": class_name,
+        "session": session,
+        "from": date_from,
+        "to": date_to,
+        "total_absences": int(len(absent_df)),
+        "total_pupils": len(pupils),
+        "school_days": school_days,
+        "counts": counts,
+        # Not derivable from `counts`: an unverified reason still counts, and a
+        # verified "Ponteng" counts despite being verified.
+        "total_ponteng": sum(p["ponteng"] for p in pupils),
+        "pupils": pupils,
+    }
+
+
+# ---------------------------------------------------------------------------
+# API: Rekod Ketidakhadiran by class
+# ---------------------------------------------------------------------------
+@app.route("/api/kelas/<class_name>/ketidakhadiran")
+def api_kelas_ketidakhadiran(class_name: str):
+    """Absence record for one class, joined with the reason ledger.
+
+    Optional query params: ?from=YYYY-MM-DD&to=YYYY-MM-DD (default = all history).
+    Restricted to the classes assigned to the logged-in teacher.
+    """
+    info, err = require_teacher()
+    if err:
+        return err
+    denied = class_denied(info, class_name)
+    if denied:
+        return denied
+    try:
+        date_from = str(request.args.get("from", "")).strip()
+        date_to = str(request.args.get("to", "")).strip()
+        for label, value in (("from", date_from), ("to", date_to)):
+            if value and not _valid_date(value):
+                return jsonify({"error": f"Tarikh '{label}' tidak sah (guna YYYY-MM-DD)"}), 400
+        if date_from and date_to and date_from > date_to:
+            return jsonify({"error": "Tarikh mula selepas tarikh tamat"}), 400
+
+        return jsonify(build_ketidakhadiran(class_name, date_from, date_to))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kelas/senarai-saya")
+def api_kelas_saya():
+    """Classes the logged-in teacher may access — drives the UI dropdowns."""
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        if info["is_admin"]:
+            students = get_data_from_sheet(SHEET_STUDENTS)
+            classes = sorted({row["Class"] for row in students})
+        else:
+            classes = list(info["classes"])
+        return jsonify({
+            "teacher": info["name"],
+            "is_admin": info["is_admin"],
+            "classes": classes,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Borang Waris — public reason form for parents
+# ---------------------------------------------------------------------------
+# The link is signed with SECRET_KEY, so nothing needs storing. It carries the
+# class, the month it was issued, and a per-class serial the school can bump to
+# kill a leaked link.
+BORANG_MAX_PER_HOUR = 40           # submissions per token per hour, per worker
+_borang_hits: dict[str, list[float]] = {}
+
+# Parents pick from the excused reasons only — "no reason" is a finding the
+# school records, not something a guardian submits about their own child.
+SEBAB_KATEGORI_WARIS = {
+    k: v["sub"] for k, v in SEBAB_KATEGORI.items() if v["waris"]
+}
+
+
+def get_borang_siri(class_name: str) -> int:
+    """Per-class link serial. Bumping it invalidates every old link."""
+    settings = load_bot_settings()
+    try:
+        return int((settings.get("borang_siri") or {}).get(class_name, 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def bump_borang_siri(class_name: str) -> int:
+    settings = load_bot_settings()
+    siri = settings.setdefault("borang_siri", {})
+    try:
+        current = int(siri.get(class_name, 1))
+    except (TypeError, ValueError):
+        current = 1
+    siri[class_name] = current + 1
+    save_bot_settings(settings)
+    return current + 1
+
+
+def _borang_sign(payload: str) -> str:
+    key = str(app.config["SECRET_KEY"]).encode()
+    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()[:12]
+
+
+def _borang_periods() -> tuple[str, str]:
+    """Current month and the previous one, so a link shared at month end keeps
+    working for a few days."""
+    now = datetime.datetime.now(tz=TIMEZONE)
+    prev = (now.replace(day=1) - datetime.timedelta(days=1)).strftime("%Y-%m")
+    return now.strftime("%Y-%m"), prev
+
+
+def make_borang_token(class_name: str, period: str | None = None) -> str:
+    """Signed link body: class + serial, with the period folded into the
+    signature rather than carried in the URL, to keep it short."""
+    period = period or _borang_periods()[0]
+    siri = get_borang_siri(class_name)
+    body = f"{class_name}|{siri}"
+    encoded = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+    return f"{encoded}.{_borang_sign(f'{class_name}|{period}|{siri}')}"
+
+
+def verify_borang_token(token: str) -> str | None:
+    """Return the class name if the token is valid and unexpired, else None."""
+    try:
+        encoded, sig = str(token).split(".", 1)
+        padding = "=" * (-len(encoded) % 4)
+        class_name, siri = base64.urlsafe_b64decode(encoded + padding).decode().split("|")
+    except Exception:
+        return None
+
+    if int(siri) != get_borang_siri(class_name):
+        return None
+
+    # The period is not in the URL, so try each one the link may have been
+    # issued in; a match proves both the signature and the period.
+    for period in _borang_periods():
+        if hmac.compare_digest(sig, _borang_sign(f"{class_name}|{period}|{siri}")):
+            return class_name
+    return None
+
+
+def borang_base() -> str:
+    """Public origin for links we hand out."""
+    return PUBLIC_BASE_URL or request.url_root.rstrip("/")
+
+
+def borang_url(token: str) -> str:
+    """Long signed form URL — used internally and as a fallback."""
+    return f"{borang_base()}/b/{token}"
+
+
+# --- Short links ----------------------------------------------------------
+# Own-domain shortener. A third-party service (bit.ly, forms.gle) would add an
+# external dependency, leak which classes are being messaged, and — worse for a
+# school — make the link look like the shortened URLs used in scams. A code on
+# the school's own domain is both shorter and more trustworthy.
+# Alphabet excludes 0/O/1/I/L so a parent can retype it without ambiguity.
+BORANG_KOD_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+BORANG_KOD_LENGTH = 6
+
+
+def _borang_kod_map() -> dict:
+    return load_bot_settings().get("borang_kod") or {}
+
+
+def get_borang_kod(class_name: str) -> str:
+    """Return this class's current short code, creating one if needed.
+
+    Codes are tied to the class's serial, so 'Jana Pautan Baharu' retires the
+    old code along with the old token.
+    """
+    siri = get_borang_siri(class_name)
+    settings = load_bot_settings()
+    kod_map = settings.setdefault("borang_kod", {})
+
+    for kod, meta in kod_map.items():
+        if meta.get("class") == class_name and int(meta.get("siri", 0)) == siri:
+            return kod
+
+    # Drop any stale codes for this class, then mint a fresh one
+    for kod in [k for k, m in kod_map.items() if m.get("class") == class_name]:
+        kod_map.pop(kod, None)
+
+    while True:
+        kod = "".join(secrets.choice(BORANG_KOD_ALPHABET) for _ in range(BORANG_KOD_LENGTH))
+        if kod not in kod_map:
+            break
+    kod_map[kod] = {"class": class_name, "siri": siri}
+    save_bot_settings(settings)
+    return kod
+
+
+def resolve_borang_kod(kod: str) -> str | None:
+    """Class name for a short code, or None if unknown or retired."""
+    meta = _borang_kod_map().get(str(kod).strip().upper())
+    if not meta:
+        return None
+    class_name = meta.get("class", "")
+    if int(meta.get("siri", 0)) != get_borang_siri(class_name):
+        return None
+    return class_name
+
+
+def borang_short_url(class_name: str) -> str:
+    return f"{borang_base()}/s/{get_borang_kod(class_name)}"
+
+
+def _borang_rate_ok(token: str) -> bool:
+    now = datetime.datetime.now(tz=TIMEZONE).timestamp()
+    hits = [t for t in _borang_hits.get(token, []) if now - t < 3600]
+    if len(hits) >= BORANG_MAX_PER_HOUR:
+        _borang_hits[token] = hits
+        return False
+    hits.append(now)
+    _borang_hits[token] = hits
+    return True
+
+
+@app.route("/s/<kod>")
+def page_borang_pendek(kod: str):
+    """Short link shared with parents. Resolves to the class, then renders the
+    same form — the long signed token stays server-side."""
+    class_name = resolve_borang_kod(kod)
+    if class_name is None:
+        return render_template("borang_sebab.html", invalid=True,
+                               school=SCHOOL_NAME, class_name="", token="")
+    return page_borang_waris(make_borang_token(class_name))
+
+
+@app.route("/b/<token>")
+@app.route("/borang/<token>")   # long form kept working for links already shared
+def page_borang_waris(token: str):
+    """Public form for guardians. No login — the signed link is the credential."""
+    class_name = verify_borang_token(token)
+    if class_name is None:
+        return render_template("borang_sebab.html", invalid=True,
+                               school=SCHOOL_NAME, class_name="", token=token)
+    return render_template(
+        "borang_sebab.html",
+        invalid=False,
+        school=SCHOOL_NAME,
+        class_name=class_name,
+        token=token,
+        kategori=SEBAB_KATEGORI_WARIS,
+        jenis_bukti=SEBAB_JENIS_BUKTI,
+    )
+
+
+@app.route("/api/borang/<token>/pilihan")
+def api_borang_pilihan(token: str):
+    """Guardian-selectable categories and their sub-reasons."""
+    if verify_borang_token(token) is None:
+        return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
+    return jsonify({"kategori": SEBAB_KATEGORI_WARIS})
+
+
+@app.route("/api/borang/<token>/murid")
+def api_borang_murid(token: str):
+    """Pupil names for the dropdown. Deliberately the whole class roster — the
+    list of who was absent is never exposed here."""
+    class_name = verify_borang_token(token)
+    if class_name is None:
+        return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
+    try:
+        students = get_data_from_sheet(SHEET_STUDENTS)
+        names = sorted(str(s["Name"]).strip() for s in students
+                       if str(s["Class"]).strip() == class_name)
+        return jsonify({"class": class_name, "students": names})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/borang/<token>", methods=["POST"])
+def api_borang_submit(token: str):
+    """Guardian submits a reason. Always lands as 'Belum Disahkan'."""
+    class_name = verify_borang_token(token)
+    if class_name is None:
+        return jsonify({"error": "Pautan tidak sah atau telah tamat tempoh."}), 403
+    if not _borang_rate_ok(token):
+        return jsonify({
+            "error": "Terlalu banyak hantaran buat masa ini. Sila cuba sebentar lagi."
+        }), 429
+    try:
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Data permintaan tidak sah"}), 400
+
+        name = str(payload.get("name", "")).strip()
+        date_str = str(payload.get("date", "")).strip()[:10]
+        penghantar = str(payload.get("penghantar", "")).strip()
+        kategori = str(payload.get("kategori", "")).strip()
+        jenis_bukti = str(payload.get("jenis_bukti", "")).strip()
+        catatan = str(payload.get("catatan", "")).strip()[:300]
+
+        if not name:
+            return jsonify({"error": "Sila pilih nama murid."}), 400
+        if not penghantar:
+            return jsonify({"error": "Sila isikan nama anda (ibu bapa/penjaga)."}), 400
+        if not _valid_date(date_str):
+            return jsonify({"error": "Tarikh tidak sah."}), 400
+        if kategori not in SEBAB_KATEGORI_WARIS:
+            return jsonify({"error": "Sila pilih kategori sebab."}), 400
+        subs = SEBAB_KATEGORI_WARIS[kategori]
+        sub_kategori = str(payload.get("sub_kategori", "")).strip()
+        if not sub_kategori and len(subs) == 1:
+            sub_kategori = subs[0]
+        if sub_kategori not in subs:
+            return jsonify({"error": "Sila pilih sub-alasan yang berkaitan."}), 400
+        if jenis_bukti and jenis_bukti not in SEBAB_JENIS_BUKTI:
+            return jsonify({"error": "Jenis bukti tidak sah."}), 400
+
+        students = get_data_from_sheet(SHEET_STUDENTS)
+        roster = {str(s["Name"]).strip().upper() for s in students
+                  if str(s["Class"]).strip() == class_name}
+        name_key = name.upper()
+        if name_key not in roster:
+            return jsonify({"error": "Nama murid tidak dijumpai dalam kelas ini."}), 400
+
+        # The date must really be an absence. The message stays neutral either
+        # way so nobody can probe this form to learn who was absent.
+        records = get_data_from_sheet(SHEET_ATTENDANCE)
+        is_absent = any(
+            str(r.get("DATE", ""))[:10] == date_str
+            and str(r.get("NAME", "")).strip().upper() == name_key
+            and str(r.get("CLASS", "")).strip() == class_name
+            and str(r.get("STATUS", "")).strip() == STATUS_ABSENT
+            for r in records
+        )
+        if not is_absent:
+            return jsonify({
+                "error": "Tiada rekod ketidakhadiran bagi murid dan tarikh tersebut. "
+                         "Sila semak tarikh, atau hubungi guru kelas."
+            }), 400
+
+        # A guardian must never be able to undo a teacher's verification —
+        # the ledger is latest-wins, so this has to be blocked explicitly.
+        existing = build_sebab_index().get((date_str, name_key))
+        if existing and existing["status_sah"] in (SAH_YA, SAH_TIDAK):
+            return jsonify({
+                "error": "Sebab bagi tarikh ini telah disahkan oleh guru kelas. "
+                         "Sila hubungi guru kelas jika perlu pembetulan."
+            }), 409
+
+        now = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        row = [date_str, name, class_name, kategori, sub_kategori, catatan,
+               jenis_bukti, "", SAH_BELUM, f"WARIS: {penghantar}", now,
+               SUMBER_WARIS]
+
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = ensure_sebab_worksheet(spreadsheet)
+        ws.append_rows([row], value_input_option="RAW")
+        invalidate_cache(SHEET_SEBAB)
+
+        return jsonify({
+            "success": True,
+            "message": "Terima kasih. Maklumat anda telah dihantar kepada guru kelas "
+                       "untuk pengesahan. Sila kemukakan surat atau slip klinik asal "
+                       "kepada guru kelas.",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kelas/<class_name>/borang")
+def api_kelas_borang(class_name: str):
+    """Link + ready-made WhatsApp message for a class. Optional ?date=YYYY-MM-DD."""
+    info, err = require_teacher()
+    if err:
+        return err
+    denied = class_denied(info, class_name)
+    if denied:
+        return denied
+    try:
+        date_str = str(request.args.get("date", "")).strip()
+        if date_str and not _valid_date(date_str):
+            return jsonify({"error": "Tarikh tidak sah"}), 400
+
+        records = get_data_from_sheet(SHEET_ATTENDANCE)
+
+        # One pass: absentee names per date, and which dates were marked at all
+        by_date: dict[str, list[str]] = {}
+        marked_dates: set[str] = set()
+        for r in records:
+            if str(r.get("CLASS", "")).strip() != class_name:
+                continue
+            d = str(r.get("DATE", ""))[:10]
+            if not d:
+                continue
+            marked_dates.add(d)
+            if str(r.get("STATUS", "")).strip() == STATUS_ABSENT:
+                by_date.setdefault(d, []).append(str(r.get("NAME", "")).strip())
+
+        # Dates that actually have absences — newest first, for the quick picker
+        dates_with_absences = [
+            {
+                "date": d,
+                "label": format_malay_date(d),
+                "count": len(sorted(set(names))),
+            }
+            for d, names in sorted(by_date.items(), reverse=True)
+        ][:60]
+
+        # Default to the most recent date that has absences. Defaulting to
+        # "today" lands on weekends and school holidays, where there is no
+        # session at all and the message would be meaningless.
+        if not date_str:
+            if dates_with_absences:
+                date_str = dates_with_absences[0]["date"]
+            elif marked_dates:
+                date_str = max(marked_dates)
+            else:
+                date_str = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+
+        absent = sorted(set(by_date.get(date_str, [])))
+        recorded = date_str in marked_dates
+
+        url = borang_short_url(class_name)
+        tajuk = f"*Kehadiran {class_name} — {format_malay_date(date_str)}*"
+
+        if absent:
+            senarai = "\n".join(f"{i}. {n}" for i, n in enumerate(absent, 1))
+            mesej = (
+                f"{tajuk}\n\n"
+                f"Tidak hadir ({len(absent)}):\n{senarai}\n\n"
+                f"Sila isi sebab: {url}\n"
+                f"Surat/slip asal serahkan kepada guru kelas. Terima kasih."
+            )
+        elif recorded:
+            mesej = f"{tajuk}\n\nSemua murid hadir. Terima kasih."
+        else:
+            mesej = (
+                f"{tajuk}\n\n"
+                f"Tiada rekod kehadiran bagi tarikh ini (cuti atau belum diisi)."
+            )
+
+        return jsonify({
+            "class": class_name,
+            "date": date_str,
+            "date_label": format_malay_date(date_str),
+            "absent": absent,
+            "absent_count": len(absent),
+            "recorded": recorded,
+            "dates": dates_with_absences,
+            "url": url,
+            "message": mesej,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/kelas/<class_name>/borang/jana-semula", methods=["POST"])
+def api_kelas_borang_reset(class_name: str):
+    """Invalidate every existing link for this class and issue a new one."""
+    info, err = require_teacher()
+    if err:
+        return err
+    denied = class_denied(info, class_name)
+    if denied:
+        return denied
+    try:
+        siri = bump_borang_siri(class_name)
+        kod = get_borang_kod(class_name)   # retires the old code, mints a new one
+        write_settings_log(info["name"], "Jana Semula Pautan Borang",
+                           f"{class_name} — siri {siri} — kod {kod}")
+        return jsonify({"success": True, "siri": siri, "kod": kod})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/sebab/options")
+def api_sebab_options():
+    """Dropdown options for the reason form — kept server-side so the stored
+    values stay aggregatable."""
+    return jsonify({
+        "kategori": [
+            {
+                "label": k,
+                "kira_ponteng": v["ponteng"],
+                "waris": v["waris"],
+                "sub": v["sub"],
+            }
+            for k, v in SEBAB_KATEGORI.items()
+        ],
+        "jenis_bukti": SEBAB_JENIS_BUKTI,
+        "status_sah": list(SAH_OPTIONS),
+    })
+
+
+_sebab_header_checked = False
+
+
+def ensure_sebab_worksheet(spreadsheet):
+    """Return the SEBAB worksheet, creating it with its header if absent."""
+    global _sebab_header_checked
+    try:
+        ws = spreadsheet.worksheet(SHEET_SEBAB)
+        # A tab created before SUMBER existed would have a short header; widen
+        # it once per process so the new column is labelled.
+        if not _sebab_header_checked:
+            _sebab_header_checked = True
+            try:
+                header = ws.row_values(1)
+                if len(header) < len(SEBAB_HEADER):
+                    ws.update("A1", [SEBAB_HEADER])
+                    log.info("Extended %s header to %d columns",
+                             SHEET_SEBAB, len(SEBAB_HEADER))
+            except Exception as e:
+                log.warning("Could not verify %s header: %s", SHEET_SEBAB, e)
+        return ws
+    except gspread.WorksheetNotFound:
+        try:
+            ws = spreadsheet.add_worksheet(
+                title=SHEET_SEBAB, rows=2000, cols=len(SEBAB_HEADER)
+            )
+            ws.update("A1", [SEBAB_HEADER])
+            log.info("Created %s worksheet", SHEET_SEBAB)
+            return ws
+        except Exception:
+            # Another worker won the race — re-fetch rather than fail
+            return spreadsheet.worksheet(SHEET_SEBAB)
+
+
+@app.route("/api/sebab", methods=["POST"])
+def api_record_sebab():
+    """Record the reason for one or more absences of a single pupil.
+
+    JSON: {class, name, dates: [...], kategori, catatan,
+           jenis_bukti, rujukan_bukti, status_sah}
+
+    Requires a logged-in teacher assigned to the class. Append-only:
+    re-recording the same date adds a new row and the latest wins, so
+    corrections keep their history. Never writes to SHEET_ATTENDANCE.
+    """
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        # silent=True so malformed JSON returns a clean 400, not a 500
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Data permintaan tidak sah"}), 400
+
+        # Identity comes from the session, never the request body — otherwise a
+        # teacher could file a record under a colleague's name.
+        teacher = info["name"]
+
+        cls = str(payload.get("class", "")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not cls or not name:
+            return jsonify({"error": "Nama murid dan kelas diperlukan"}), 400
+
+        denied = class_denied(info, cls)
+        if denied:
+            return denied
+
+        dates = payload.get("dates") or []
+        if not isinstance(dates, list) or not dates:
+            return jsonify({"error": "Sila pilih sekurang-kurangnya satu tarikh"}), 400
+        dates = [str(d).strip()[:10] for d in dates]
+        bad = [d for d in dates if not _valid_date(d)]
+        if bad:
+            return jsonify({"error": f"Tarikh tidak sah: {', '.join(bad)}"}), 400
+        dates = sorted(set(dates))
+
+        kategori = str(payload.get("kategori", "")).strip()
+        if kategori not in SEBAB_KATEGORI:
+            return jsonify({"error": "Kategori sebab tidak sah"}), 400
+
+        subs = sub_kategori_for(kategori)
+        sub_kategori = str(payload.get("sub_kategori", "")).strip()
+        if not sub_kategori and len(subs) == 1:
+            sub_kategori = subs[0]          # only one option — fill it in
+        if sub_kategori not in subs:
+            return jsonify({
+                "error": f"Sila pilih sub-alasan bagi kategori '{kategori}'"
+            }), 400
+
+        status_sah = str(payload.get("status_sah", "")).strip() or SAH_BELUM
+        if status_sah not in SAH_OPTIONS:
+            return jsonify({"error": "Status pengesahan tidak sah"}), 400
+
+        jenis_bukti = str(payload.get("jenis_bukti", "")).strip()
+        if jenis_bukti and jenis_bukti not in SEBAB_JENIS_BUKTI:
+            return jsonify({"error": "Jenis bukti tidak sah"}), 400
+
+        catatan = str(payload.get("catatan", "")).strip()
+        rujukan = str(payload.get("rujukan_bukti", "")).strip()
+
+        # A reason must attach to a real absence — guards against typos
+        # creating orphan ledger rows nothing will ever read.
+        records = get_data_from_sheet(SHEET_ATTENDANCE)
+        name_key = name.upper()
+        absent_dates = {
+            str(r.get("DATE", ""))[:10]
+            for r in records
+            if str(r.get("NAME", "")).strip().upper() == name_key
+            and str(r.get("CLASS", "")).strip() == cls
+            and str(r.get("STATUS", "")).strip() == STATUS_ABSENT
+        }
+        not_absent = [d for d in dates if d not in absent_dates]
+        if not_absent:
+            return jsonify({
+                "error": "Tarikh berikut bukan rekod tidak hadir bagi murid ini: "
+                         + ", ".join(not_absent)
+            }), 400
+
+        now = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+        new_rows = [
+            [d, name, cls, kategori, sub_kategori, catatan, jenis_bukti,
+             rujukan, status_sah, teacher, now, SUMBER_GURU]
+            for d in dates
+        ]
+
+        # Append-only, so no delete-rewrite race — no lock needed here.
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = ensure_sebab_worksheet(spreadsheet)
+        ws.append_rows(new_rows, value_input_option="RAW")
+
+        invalidate_cache(SHEET_SEBAB)
+        write_settings_log(
+            teacher, "Rekod Sebab",
+            f"{name} ({cls}) — {len(dates)} tarikh — {kategori} [{status_sah}]",
+        )
+
+        return jsonify({"success": True, "recorded": len(dates), "dates": dates})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Surat Amaran — escalation ladder
+# ---------------------------------------------------------------------------
+def get_amaran_thresholds() -> dict[str, int]:
+    """Return {tahap: ponteng_count}, school-configurable via bot_settings.json."""
+    settings = load_bot_settings()
+    raw = settings.get("amaran_thresholds") or {}
+    out = dict(AMARAN_DEFAULT_THRESHOLDS)
+    for tahap in out:
+        try:
+            val = int(raw[tahap])
+            if val > 0:
+                out[tahap] = val
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def get_amaran_records() -> list[dict]:
+    """Fetch issued-letter records, tolerating the tab not existing yet."""
+    try:
+        return get_data_from_sheet(SHEET_AMARAN)
+    except gspread.WorksheetNotFound:
+        now = datetime.datetime.now(tz=TIMEZONE).timestamp()
+        _sheet_cache[SHEET_AMARAN] = ([], now)
+        return []
+
+
+def build_amaran_index() -> dict[tuple[str, str], dict]:
+    """Highest warning level already issued per (class, pupil)."""
+    index: dict[tuple[str, str], dict] = {}
+    for row in get_amaran_records():
+        name = _get_col(row, "NAME", "NAMA")
+        cls = _get_col(row, "CLASS", "KELAS")
+        if not name or not cls:
+            continue
+        try:
+            tahap = int(_get_col(row, "TAHAP") or 0)
+        except ValueError:
+            continue
+        key = (cls, name.strip().upper())
+        prev = index.get(key)
+        if prev is None or tahap > prev["tahap"]:
+            index[key] = {
+                "tahap": tahap,
+                "tarikh": _get_col(row, "TARIKH_KELUAR")[:10],
+                "oleh": _get_col(row, "DIREKOD_OLEH"),
+            }
+    return index
+
+
+def tahap_for_ponteng(ponteng: int, thresholds: dict[str, int]) -> int:
+    """Highest escalation level reached by this many unexcused absences."""
+    reached = 0
+    for tahap_str, minimum in thresholds.items():
+        if ponteng >= minimum:
+            reached = max(reached, int(tahap_str))
+    return reached
+
+
+def build_amaran_senarai(date_from: str, date_to: str,
+                         class_name: str | None = None,
+                         allowed: list[str] | None = None) -> dict:
+    """Pupils who have reached a warning threshold.
+
+    Single pass over the attendance data — building this per class would rescan
+    the whole sheet once per class.
+    """
+    thresholds = get_amaran_thresholds()
+    students = get_data_from_sheet(SHEET_STUDENTS)
+    enrolled = {
+        (str(s["Class"]).strip(), str(s["Name"]).strip().upper())
+        for s in students
+    }
+
+    result = {
+        "from": date_from,
+        "to": date_to,
+        "class": class_name or "",
+        "thresholds": thresholds,
+        "labels": {str(k): v for k, v in AMARAN_LABELS.items()},
+        "pupils": [],
+        "perlu_tindakan": 0,
+    }
+
+    records = get_data_from_sheet(SHEET_ATTENDANCE)
+    if not records:
+        return result
+
+    df = pd.DataFrame(records)
+    df.columns = [c.upper() for c in df.columns]
+    if class_name:
+        df = df[df["CLASS"] == class_name]
+    elif allowed is not None:
+        # No class chosen: fall back to everything this teacher may see
+        df = df[df["CLASS"].isin(allowed)]
+    if df.empty:
+        return result
+
+    df = df.copy()
+    df["DATE_ONLY"] = df["DATE"].astype(str).str[:10]
+    if date_from:
+        df = df[df["DATE_ONLY"] >= date_from]
+    if date_to:
+        df = df[df["DATE_ONLY"] <= date_to]
+    if df.empty:
+        return result
+
+    df = df.sort_values("DATE", ascending=True)
+    df["NAME_KEY"] = df["NAME"].astype(str).str.strip().str.upper()
+    df = df.drop_duplicates(subset=["CLASS", "NAME_KEY", "DATE_ONLY"], keep="last")
+    absent_df = df[df["STATUS"] == STATUS_ABSENT]
+    if absent_df.empty:
+        return result
+
+    sebab_index = build_sebab_index()
+    amaran_index = build_amaran_index()
+
+    tally: dict[tuple[str, str], dict] = {}
+    for _, row in absent_df.iterrows():
+        cls = str(row["CLASS"]).strip()
+        name_key = str(row["NAME_KEY"])
+        date_only = str(row["DATE_ONLY"])
+        sebab_entry = sebab_index.get((date_only, name_key))
+        status = resolve_sebab_status(sebab_entry)
+
+        entry = tally.setdefault((cls, name_key), {
+            "name": str(row["NAME"]).strip(),
+            "class": cls,
+            "total_absences": 0,
+            "ponteng": 0,
+            "ponteng_dates": [],
+        })
+        entry["total_absences"] += 1
+        if counts_as_ponteng(status, sebab_entry):
+            entry["ponteng"] += 1
+            entry["ponteng_dates"].append(date_only)
+
+    pupils = []
+    for (cls, name_key), entry in tally.items():
+        tahap_layak = tahap_for_ponteng(entry["ponteng"], thresholds)
+        if tahap_layak == 0:
+            continue
+        issued = amaran_index.get((cls, name_key))
+        tahap_issued = issued["tahap"] if issued else 0
+        entry.update({
+            "still_enrolled": (cls, name_key) in enrolled,
+            "tahap_layak": tahap_layak,
+            "tahap_label": AMARAN_LABELS.get(tahap_layak, ""),
+            "tahap_dikeluarkan": tahap_issued,
+            "amaran_terakhir": issued["tarikh"] if issued else "",
+            "amaran_oleh": issued["oleh"] if issued else "",
+            "perlu_tindakan": tahap_layak > tahap_issued,
+            "ponteng_dates": sorted(entry["ponteng_dates"], reverse=True),
+        })
+        pupils.append(entry)
+
+    # Most urgent first: needs action, then highest level, then most absences
+    pupils.sort(key=lambda p: (not p["perlu_tindakan"], -p["tahap_layak"], -p["ponteng"], p["name"]))
+    result["pupils"] = pupils
+    result["perlu_tindakan"] = sum(1 for p in pupils if p["perlu_tindakan"])
+    return result
+
+
+@app.route("/api/amaran/senarai")
+def api_amaran_senarai():
+    """Pupils who have reached a warning threshold. Optional ?class=&from=&to=
+
+    Without ?class=, returns every class the logged-in teacher may see.
+    """
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        date_from = str(request.args.get("from", "")).strip()
+        date_to = str(request.args.get("to", "")).strip()
+        class_name = str(request.args.get("class", "")).strip() or None
+        for label, value in (("from", date_from), ("to", date_to)):
+            if value and not _valid_date(value):
+                return jsonify({"error": f"Tarikh '{label}' tidak sah (guna YYYY-MM-DD)"}), 400
+        if date_from and date_to and date_from > date_to:
+            return jsonify({"error": "Tarikh mula selepas tarikh tamat"}), 400
+        if class_name:
+            denied = class_denied(info, class_name)
+            if denied:
+                return denied
+        return jsonify(build_amaran_senarai(
+            date_from, date_to, class_name, allowed_classes_for(info)
+        ))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/amaran/tetapan", methods=["GET"])
+def api_get_amaran_tetapan():
+    """Current escalation thresholds."""
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        return jsonify({
+            "thresholds": get_amaran_thresholds(),
+            "labels": {str(k): v for k, v in AMARAN_LABELS.items()},
+            "defaults": AMARAN_DEFAULT_THRESHOLDS,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/amaran/tetapan", methods=["POST"])
+def api_set_amaran_tetapan():
+    """Update thresholds. JSON: {thresholds: {"1": 3, ...}}. Admin only —
+    the ladder is school-wide policy, not a per-class setting."""
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Data permintaan tidak sah"}), 400
+        if not info["is_admin"]:
+            return jsonify({
+                "error": "Hanya pentadbir (SEMUA) boleh menukar paras amaran."
+            }), 403
+        teacher = info["name"]
+
+        raw = payload.get("thresholds") or {}
+        cleaned: dict[str, int] = {}
+        for tahap in AMARAN_DEFAULT_THRESHOLDS:
+            try:
+                val = int(raw[tahap])
+            except (KeyError, TypeError, ValueError):
+                return jsonify({"error": f"Nilai tahap {tahap} tidak sah"}), 400
+            if val < 1 or val > 365:
+                return jsonify({"error": f"Nilai tahap {tahap} mesti antara 1 dan 365"}), 400
+            cleaned[tahap] = val
+
+        ordered = [cleaned[t] for t in sorted(cleaned, key=int)]
+        if ordered != sorted(ordered) or len(set(ordered)) != len(ordered):
+            return jsonify({"error": "Nilai tahap mesti menaik (tahap 1 < 2 < 3 < 4)"}), 400
+
+        settings = load_bot_settings()
+        settings["amaran_thresholds"] = cleaned
+        save_bot_settings(settings)
+        write_settings_log(
+            teacher, "Tetapan Amaran",
+            " / ".join(f"T{t}={cleaned[t]}" for t in sorted(cleaned, key=int)),
+        )
+        return jsonify({"success": True, "thresholds": cleaned})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def ensure_amaran_worksheet(spreadsheet):
+    """Return the AMARAN worksheet, creating it with its header if absent."""
+    try:
+        return spreadsheet.worksheet(SHEET_AMARAN)
+    except gspread.WorksheetNotFound:
+        try:
+            ws = spreadsheet.add_worksheet(
+                title=SHEET_AMARAN, rows=2000, cols=len(AMARAN_HEADER)
+            )
+            ws.update("A1", [AMARAN_HEADER])
+            log.info("Created %s worksheet", SHEET_AMARAN)
+            return ws
+        except Exception:
+            return spreadsheet.worksheet(SHEET_AMARAN)
+
+
+@app.route("/api/amaran/rekod", methods=["POST"])
+def api_record_amaran():
+    """Record that a warning letter was issued.
+
+    JSON: {class, name, tahap, jumlah_ponteng, catatan}
+    Append-only; the highest level recorded wins.
+    """
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        payload = request.get_json(silent=True)
+        if not payload:
+            return jsonify({"error": "Data permintaan tidak sah"}), 400
+
+        teacher = info["name"]
+        cls = str(payload.get("class", "")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not cls or not name:
+            return jsonify({"error": "Nama murid dan kelas diperlukan"}), 400
+
+        denied = class_denied(info, cls)
+        if denied:
+            return denied
+
+        try:
+            tahap = int(payload.get("tahap", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Tahap amaran tidak sah"}), 400
+        if tahap not in AMARAN_LABELS:
+            return jsonify({"error": "Tahap amaran tidak sah"}), 400
+
+        try:
+            jumlah = int(payload.get("jumlah_ponteng", 0))
+        except (TypeError, ValueError):
+            jumlah = 0
+
+        # Don't let a lower level overwrite a higher one already on file
+        existing = build_amaran_index().get((cls, name.upper()))
+        if existing and existing["tahap"] >= tahap:
+            return jsonify({
+                "error": f"{AMARAN_LABELS[existing['tahap']]} sudah direkodkan "
+                         f"pada {existing['tarikh']} oleh {existing['oleh']}."
+            }), 409
+
+        today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+        row = [today, name, cls, tahap, jumlah, teacher,
+               str(payload.get("catatan", "")).strip()]
+
+        client = get_spreadsheet_client()
+        spreadsheet = client.open_by_url(SPREADSHEET_URL)
+        ws = ensure_amaran_worksheet(spreadsheet)
+        ws.append_rows([row], value_input_option="RAW")
+
+        invalidate_cache(SHEET_AMARAN)
+        write_settings_log(
+            teacher, "Surat Amaran",
+            f"{name} ({cls}) — {AMARAN_LABELS[tahap]} — {jumlah} hari ponteng",
+        )
+        return jsonify({"success": True, "tahap": tahap, "tarikh": today})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/surat-amaran/<class_name>/<student_name>")
+def page_surat_amaran(class_name: str, student_name: str):
+    """Printable warning letter. Rendered as HTML — print to PDF from the browser."""
+    info, err = require_teacher()
+    if err:
+        return Response("Sila log masuk untuk menjana surat amaran.", status=401)
+    if class_denied(info, class_name):
+        return Response("Anda tidak dibenarkan mengakses kelas ini.", status=403)
+    try:
+        tahap = int(request.args.get("tahap", 1))
+    except (TypeError, ValueError):
+        tahap = 1
+    if tahap not in AMARAN_LABELS:
+        tahap = 1
+
+    date_from = str(request.args.get("from", "")).strip()
+    date_to = str(request.args.get("to", "")).strip()
+    for value in (date_from, date_to):
+        if value and not _valid_date(value):
+            return Response("Tarikh tidak sah", status=400)
+
+    data = build_amaran_senarai(date_from, date_to, class_name)
+    pupil = next(
+        (p for p in data["pupils"] if p["name"].strip().upper() == student_name.strip().upper()),
+        None,
+    )
+    if pupil is None:
+        return Response(
+            "Murid ini belum mencapai mana-mana tahap amaran bagi tempoh ini.",
+            status=404,
+        )
+
+    today = datetime.datetime.now(tz=TIMEZONE).strftime("%Y-%m-%d")
+    return render_template(
+        "surat_amaran.html",
+        school=SCHOOL_NAME,
+        pupil=pupil,
+        tahap=tahap,
+        tahap_label=AMARAN_LABELS[tahap],
+        session=get_session(class_name),
+        today_label=format_malay_date(today),
+        dates=[format_malay_date(d) for d in pupil["ponteng_dates"]],
+        threshold=data["thresholds"].get(str(tahap), 0),
+    )
+
+
+@app.route("/api/export/ketidakhadiran/<class_name>")
+def api_export_ketidakhadiran(class_name: str):
+    """Download the class absence record as CSV, for sharing with the class."""
+    info, err = require_teacher()
+    if err:
+        return Response("Sila log masuk untuk memuat turun rekod.", status=401)
+    if class_denied(info, class_name):
+        return Response("Anda tidak dibenarkan mengakses kelas ini.", status=403)
+    try:
+        date_from = str(request.args.get("from", "")).strip()
+        date_to = str(request.args.get("to", "")).strip()
+        for value in (date_from, date_to):
+            if value and not _valid_date(value):
+                return Response("Tarikh tidak sah", status=400)
+
+        data = build_ketidakhadiran(class_name, date_from, date_to)
+        if not data["pupils"]:
+            return Response("Tiada rekod ketidakhadiran", status=404)
+
+        status_label = {
+            "tiada_sebab": "Tiada Sebab",
+            "belum_disahkan": SAH_BELUM,
+            "sah": SAH_YA,
+            "tidak_sah": SAH_TIDAK,
+        }
+
+        rows = []
+        bil = 0
+        for pupil in data["pupils"]:
+            for rec in sorted(pupil["records"], key=lambda r: r["date"]):
+                bil += 1
+                rows.append({
+                    "Bil": bil,
+                    "Nama": pupil["name"],
+                    "Kelas": class_name,
+                    "Tarikh": rec["date"],
+                    "Hari": rec["date_label"],
+                    "Status Sebab": status_label.get(rec["status"], rec["status"]),
+                    "Dikira Ponteng": "Ya" if rec.get("kira_ponteng") else "Tidak",
+                    "Kategori": rec["kategori"],
+                    "Sub Alasan": rec.get("sub_kategori", ""),
+                    "Catatan": rec["catatan"],
+                    "Jenis Bukti": rec["jenis_bukti"],
+                    "Rujukan Bukti": rec["rujukan_bukti"],
+                    "Direkod Oleh": rec["direkod_oleh"],
+                    "Sumber": rec.get("sumber", ""),
+                })
+
+        buf = io.StringIO()
+        pd.DataFrame(rows).to_csv(buf, index=False)
+        span = f"{date_from or 'awal'}_{date_to or 'terkini'}"
+        filename = f"Ketidakhadiran_{class_name}_{span}.csv"
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except Exception as e:
+        return Response(str(e), status=500)
 
 
 # ---------------------------------------------------------------------------

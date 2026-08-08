@@ -29,7 +29,10 @@
 <body class="bg-slate-100 text-gray-800 min-h-screen">
 
     <!-- Toast -->
-    <div id="toast-container" class="fixed top-3 right-3 z-50 flex flex-col gap-2"></div>
+    <!-- Toasts sit above every other layer (panel z-50, modals z-60/z-70) —
+         otherwise a success message fires behind the open modal that triggered
+         it, blurred by that modal's backdrop. -->
+    <div id="toast-container" class="fixed top-3 right-3 z-[100] flex flex-col gap-2"></div>
 
     <!-- Loading -->
     <div id="loading-overlay" class="hidden fixed inset-0 bg-black/30 backdrop-blur-sm z-40 flex items-center justify-center">
@@ -324,9 +327,15 @@
                 <i class="fa-solid fa-chart-line text-white text-sm"></i>
                 <h2 class="text-sm font-bold text-white">Rumusan Kehadiran</h2>
             </div>
-            <button onclick="toggleSidebar()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition">
-                <i class="fa-solid fa-xmark text-white text-xs"></i>
-            </button>
+            <div class="flex items-center gap-1.5">
+                <button onclick="toggleSidebarFull()" id="sidebar-full-btn" title="Paparan penuh"
+                    class="hidden sm:flex w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 items-center justify-center transition">
+                    <i id="sidebar-full-icon" class="fa-solid fa-up-right-and-down-left-from-center text-white text-xs"></i>
+                </button>
+                <button onclick="toggleSidebar()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark text-white text-xs"></i>
+                </button>
+            </div>
         </div>
 
         <!-- Tabs -->
@@ -342,6 +351,10 @@
             <button onclick="switchSidebarTab('rmt')" id="tab-rmt"
                 class="flex-1 py-2.5 text-xs font-bold text-center transition sidebar-tab">
                 <i class="fa-solid fa-bowl-rice mr-1"></i>RMT
+            </button>
+            <button onclick="switchSidebarTab('sebab')" id="tab-sebab"
+                class="flex-1 py-2.5 text-xs font-bold text-center transition sidebar-tab">
+                <i class="fa-solid fa-clipboard-list mr-1"></i>Rekod
             </button>
         </div>
 
@@ -417,6 +430,275 @@
                     <i class="fa-solid fa-bowl-rice text-3xl text-gray-200"></i>
                     <p class="text-xs text-gray-400 mt-2">Pilih bulan untuk melihat laporan RMT.</p>
                 </div>
+            </div>
+        </div>
+
+        <!-- Tab Content: Rekod Ketidakhadiran -->
+        <div id="tab-content-sebab" class="flex-1 overflow-y-auto p-3 space-y-3 hidden">
+            <!-- Teacher identity — required before recording any reason -->
+            <div id="sebab-auth-form" class="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-1.5">
+                <div class="flex items-center gap-1.5 mb-0.5">
+                    <i class="fa-solid fa-user-shield text-[10px] text-slate-400"></i>
+                    <span class="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Pengenalan Guru</span>
+                </div>
+                <p class="text-[10px] text-slate-500 leading-snug">Sila kenal pasti diri untuk merekod sebab ketidakhadiran.</p>
+                <select id="sebab-auth-teacher" class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-[11px] font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                    <option value="">— Pilih nama guru —</option>
+                </select>
+                <input type="password" id="sebab-auth-password" placeholder="Kata laluan"
+                    onkeydown="if(event.key==='Enter')sebabLogin()"
+                    class="w-full border border-gray-300 rounded-lg px-2 py-1.5 text-[11px] font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                <p id="sebab-auth-error" class="hidden text-[10px] font-bold text-red-600"></p>
+                <button onclick="sebabLogin()" class="w-full px-3 py-1.5 text-[11px] font-bold rounded-lg bg-slate-700 text-white hover:bg-slate-800 transition">
+                    <i class="fa-solid fa-right-to-bracket mr-1"></i>Sahkan
+                </button>
+            </div>
+            <div id="sebab-auth-info" class="hidden flex items-center gap-1.5 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                <i class="fa-solid fa-user-check text-[10px] text-emerald-500"></i>
+                <span class="text-[10px] text-emerald-700 font-medium">Direkod sebagai <strong id="sebab-auth-name"></strong></span>
+                <button onclick="sebabLogout()" class="ml-auto text-[10px] font-bold text-emerald-600 hover:text-emerald-800 underline">Tukar</button>
+            </div>
+
+            <!-- Everything below needs a logged-in, class-assigned teacher -->
+            <div id="sebab-authed" class="hidden space-y-3">
+            <!-- Sub-views -->
+            <div class="flex gap-1 bg-gray-100 rounded-lg p-1">
+                <button onclick="switchSebabView('rekod')" id="sebab-view-btn-rekod" class="sebab-view-btn active">
+                    <i class="fa-solid fa-clipboard-list mr-1"></i>Ketidakhadiran
+                </button>
+                <button onclick="switchSebabView('amaran')" id="sebab-view-btn-amaran" class="sebab-view-btn">
+                    <i class="fa-solid fa-envelope-circle-check mr-1"></i>Surat Amaran
+                </button>
+            </div>
+
+            <div id="sebab-view-rekod" class="space-y-3">
+            <!-- Class select -->
+            <div>
+                <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Kelas</label>
+                <select id="sebab-class-select" onchange="loadKetidakhadiran()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                    <option value="">— Pilih kelas —</option>
+                </select>
+            </div>
+
+            <!-- Date range -->
+            <div class="grid grid-cols-2 gap-1.5">
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Dari</label>
+                    <input type="date" id="sebab-date-from" onchange="loadKetidakhadiran()"
+                        class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                </div>
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Hingga</label>
+                    <input type="date" id="sebab-date-to" onchange="loadKetidakhadiran()"
+                        class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                </div>
+            </div>
+
+            <!-- Filter chips + export -->
+            <div id="sebab-controls" class="hidden space-y-1.5">
+                <div class="flex flex-wrap gap-1">
+                    <button onclick="setSebabFilter('semua')" id="sebab-filter-semua" class="sebab-filter active">Semua</button>
+                    <button onclick="setSebabFilter('tiada_sebab')" id="sebab-filter-tiada_sebab" class="sebab-filter">Tiada Sebab</button>
+                    <button onclick="setSebabFilter('belum_disahkan')" id="sebab-filter-belum_disahkan" class="sebab-filter">Belum Disah</button>
+                    <button onclick="setSebabFilter('tidak_sah')" id="sebab-filter-tidak_sah" class="sebab-filter">Tidak Sah</button>
+                    <button onclick="setSebabFilter('sah')" id="sebab-filter-sah" class="sebab-filter">Sah</button>
+                </div>
+                <div class="flex gap-1.5">
+                    <button onclick="downloadKetidakhadiran()" class="flex-1 px-3 py-2 text-[11px] font-bold rounded-lg bg-rose-500 text-white hover:bg-rose-600 transition shadow-sm">
+                        <i class="fa-solid fa-file-csv mr-1"></i>CSV
+                    </button>
+                    <button onclick="openBorangModal()" class="flex-[2] px-3 py-2 text-[11px] font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-sm">
+                        <i class="fa-brands fa-whatsapp mr-1"></i>Hantar ke Group Kelas
+                    </button>
+                </div>
+            </div>
+
+            <!-- Report content -->
+            <div id="sebab-content">
+                <div class="text-center py-8">
+                    <i class="fa-solid fa-clipboard-list text-3xl text-gray-200"></i>
+                    <p class="text-xs text-gray-400 mt-2">Pilih kelas untuk melihat rekod ketidakhadiran.</p>
+                </div>
+            </div>
+            </div><!-- /sebab-view-rekod -->
+
+            <!-- Sub-view: Surat Amaran -->
+            <div id="sebab-view-amaran" class="hidden space-y-3">
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Skop</label>
+                    <select id="amaran-class-select" onchange="loadAmaran()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white">
+                        <option value="">Semua Kelas</option>
+                    </select>
+                    <p class="text-[10px] text-gray-400 mt-1">Kiraan ponteng adalah terkumpul bagi keseluruhan rekod sesi persekolahan.</p>
+                </div>
+
+                <!-- Threshold settings -->
+                <details id="amaran-tetapan-panel" class="hidden border border-gray-200 rounded-lg">
+                    <summary class="px-2.5 py-2 text-[11px] font-bold text-gray-600 cursor-pointer select-none">
+                        <i class="fa-solid fa-sliders mr-1 text-gray-400"></i>Paras Amaran
+                    </summary>
+                    <div class="px-2.5 pb-2.5 pt-1 space-y-1.5">
+                        <p class="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded p-1.5">
+                            Nilai lalai 3 / 7 / 10 / 20 hari. Sila sahkan dengan PK HEM mengikut pekeliling semasa sebelum digunakan.
+                        </p>
+                        <div id="amaran-tetapan-rows" class="space-y-1"></div>
+                        <p id="amaran-tetapan-error" class="hidden text-[10px] font-bold text-red-600"></p>
+                        <button onclick="saveAmaranTetapan()" class="w-full px-3 py-1.5 text-[11px] font-bold rounded-lg bg-slate-700 text-white hover:bg-slate-800 transition">
+                            <i class="fa-solid fa-floppy-disk mr-1"></i>Simpan Paras
+                        </button>
+                    </div>
+                </details>
+
+                <div id="amaran-content">
+                    <div class="text-center py-8">
+                        <div class="w-6 h-6 border-2 border-rose-200 border-t-rose-600 rounded-full animate-spin mx-auto"></div>
+                    </div>
+                </div>
+            </div>
+            </div><!-- /sebab-authed -->
+        </div>
+    </div>
+
+    <!-- Hantar ke Group Kelas Modal -->
+    <div id="borang-modal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-[70] flex items-center justify-center p-3">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden">
+            <div class="bg-gradient-to-r from-emerald-500 to-green-600 px-4 py-3 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2 min-w-0">
+                    <i class="fa-brands fa-whatsapp text-white text-sm shrink-0"></i>
+                    <h2 class="text-sm font-bold text-white truncate">Hantar ke Group Kelas</h2>
+                </div>
+                <button onclick="closeBorangModal()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition shrink-0">
+                    <i class="fa-solid fa-xmark text-white text-xs"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-3 space-y-3">
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Tarikh Ada Ketidakhadiran</label>
+                        <span id="borang-dates-count" class="text-[9px] text-gray-400"></span>
+                    </div>
+                    <div id="borang-dates" class="max-h-40 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100"></div>
+                </div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Atau Pilih Tarikh Lain</label>
+                    <input type="date" id="borang-date" onchange="loadBorangMessage()"
+                        class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-emerald-400 outline-none bg-white">
+                </div>
+
+                <div id="borang-summary" class="text-[11px] text-gray-600"></div>
+
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Mesej Untuk Group</label>
+                    <textarea id="borang-message" rows="12" readonly
+                        class="w-full border border-gray-300 rounded-lg px-2 py-2 text-[11px] font-mono leading-snug bg-gray-50 focus:ring-2 focus:ring-emerald-400 outline-none"></textarea>
+                </div>
+
+                <div class="flex items-start gap-2 px-2.5 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-800 font-medium">
+                    <i class="fa-solid fa-triangle-exclamation text-amber-500 mt-0.5 shrink-0"></i>
+                    <span>Mesej ini menyenaraikan nama murid. Hantar hanya ke group rasmi kelas anda.
+                    Sebab yang diisi ibu bapa <strong>tidak</strong> dipaparkan kepada group.</span>
+                </div>
+
+                <p id="borang-error" class="hidden text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1.5"></p>
+            </div>
+
+            <div class="border-t border-gray-200 p-3 shrink-0 space-y-1.5">
+                <div class="flex gap-1.5">
+                    <button onclick="copyBorangMessage()" id="borang-copy-btn" class="flex-1 px-3 py-2 text-[11px] font-bold rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition">
+                        <i class="fa-solid fa-copy mr-1"></i>Salin Mesej
+                    </button>
+                    <button onclick="openWhatsApp()" class="flex-[2] px-3 py-2 text-[11px] font-bold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-sm">
+                        <i class="fa-brands fa-whatsapp mr-1"></i>Buka WhatsApp
+                    </button>
+                </div>
+                <button onclick="resetBorangLink()" class="w-full px-3 py-1.5 text-[10px] font-bold rounded-lg bg-white border border-gray-300 text-gray-500 hover:bg-gray-50 transition">
+                    <i class="fa-solid fa-rotate mr-1"></i>Jana Pautan Baharu (batalkan pautan lama)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rekod Sebab Modal -->
+    <div id="sebab-modal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-[70] flex items-center justify-center p-3">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[88vh] flex flex-col overflow-hidden">
+            <div class="bg-gradient-to-r from-rose-500 to-red-600 px-4 py-3 flex items-center justify-between shrink-0">
+                <div class="flex items-center gap-2 min-w-0">
+                    <i class="fa-solid fa-file-pen text-white text-sm shrink-0"></i>
+                    <h2 class="text-sm font-bold text-white truncate">Rekod Sebab Ketidakhadiran</h2>
+                </div>
+                <button onclick="closeSebabModal()" class="w-7 h-7 rounded-lg bg-white/20 hover:bg-white/30 flex items-center justify-center transition shrink-0">
+                    <i class="fa-solid fa-xmark text-white text-xs"></i>
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-3 space-y-3">
+                <!-- Pupil -->
+                <div class="bg-gray-50 border border-gray-200 rounded-lg p-2.5">
+                    <p id="sebab-modal-name" class="text-xs font-bold text-gray-800 break-words"></p>
+                    <p id="sebab-modal-class" class="text-[10px] text-gray-500 mt-0.5"></p>
+                </div>
+
+                <!-- Dates -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Tarikh Tidak Hadir</label>
+                        <button onclick="toggleAllSebabDates()" id="sebab-modal-toggle-all"
+                            class="text-[10px] font-bold text-rose-600 hover:text-rose-800 underline">Pilih Semua</button>
+                    </div>
+                    <p class="text-[10px] text-gray-400 mb-1.5">Satu surat boleh meliputi beberapa tarikh — tandakan semua yang berkenaan.</p>
+                    <div id="sebab-modal-dates" class="max-h-40 overflow-y-auto border border-gray-200 rounded-lg p-1.5 space-y-0.5"></div>
+                </div>
+
+                <!-- Kategori -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Kategori Sebab <span class="text-gray-400 normal-case font-medium">(IDME)</span></label>
+                    <select id="sebab-modal-kategori" class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white"></select>
+                    <p id="sebab-modal-kategori-hint" class="text-[10px] mt-1"></p>
+                </div>
+
+                <!-- Sub-alasan -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Sub-Alasan</label>
+                    <select id="sebab-modal-sub" class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white"></select>
+                </div>
+
+                <!-- Catatan -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Catatan <span class="text-gray-400 normal-case font-medium">(pilihan)</span></label>
+                    <textarea id="sebab-modal-catatan" rows="2" placeholder="Cth: Demam panas, dirawat di Klinik Kesihatan Tawau"
+                        class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs focus:ring-2 focus:ring-rose-400 outline-none"></textarea>
+                </div>
+
+                <!-- Bukti -->
+                <div class="grid grid-cols-2 gap-1.5">
+                    <div>
+                        <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Jenis Bukti</label>
+                        <select id="sebab-modal-bukti" class="w-full border border-gray-300 rounded-lg px-2 py-2 text-[11px] font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white"></select>
+                    </div>
+                    <div>
+                        <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Rujukan Fail</label>
+                        <input type="text" id="sebab-modal-rujukan" placeholder="Cth: Fail HEM 1/2026 no.45"
+                            class="w-full border border-gray-300 rounded-lg px-2 py-2 text-[11px] focus:ring-2 focus:ring-rose-400 outline-none">
+                    </div>
+                </div>
+                <p class="text-[10px] text-gray-400 -mt-1.5">Surat asal disimpan seperti biasa di fail sekolah. Sistem hanya menyimpan rujukannya.</p>
+
+                <!-- Status pengesahan -->
+                <div>
+                    <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Status Pengesahan</label>
+                    <select id="sebab-modal-status" class="w-full border border-gray-300 rounded-lg px-2 py-2 text-xs font-medium focus:ring-2 focus:ring-rose-400 outline-none bg-white"></select>
+                </div>
+
+                <p id="sebab-modal-error" class="hidden text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1.5"></p>
+            </div>
+
+            <div class="border-t border-gray-200 p-3 shrink-0 flex gap-1.5">
+                <button onclick="closeSebabModal()" class="flex-1 px-3 py-2 text-[11px] font-bold rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition">Batal</button>
+                <button onclick="submitSebab()" id="sebab-modal-save" class="flex-[2] px-3 py-2 text-[11px] font-bold rounded-lg bg-rose-500 text-white hover:bg-rose-600 transition shadow-sm disabled:opacity-50">
+                    <i class="fa-solid fa-floppy-disk mr-1"></i>Simpan Rekod
+                </button>
             </div>
         </div>
     </div>
@@ -504,6 +786,10 @@
                     class="flex-1 py-2.5 text-[11px] font-bold text-center transition settings-tab">
                     <i class="fa-solid fa-bell mr-0.5"></i>Notifikasi
                 </button>
+                <button onclick="switchSettingsMode('guru')" id="settings-tab-guru"
+                    class="flex-1 py-2.5 text-[11px] font-bold text-center transition settings-tab">
+                    <i class="fa-solid fa-chalkboard-user mr-0.5"></i>Guru Kelas
+                </button>
             </div>
 
             <!-- Modal Content -->
@@ -565,6 +851,52 @@
                     </div>
                     <div id="settings-remove-list" class="max-h-[350px] overflow-y-auto rounded-lg border border-gray-100">
                         <p class="text-xs text-gray-300 text-center py-4">Pilih kelas untuk melihat senarai.</p>
+                    </div>
+                </div>
+
+                <!-- GURU KELAS MODE -->
+                <div id="settings-mode-guru" class="hidden space-y-3">
+                    <div class="flex items-start gap-2 px-3 py-2 bg-blue-50 border border-blue-200 rounded-lg text-[10px] text-blue-700 font-medium">
+                        <i class="fa-solid fa-circle-info text-blue-500 mt-0.5 shrink-0"></i>
+                        <span>Tetapkan kelas bagi setiap guru. Guru hanya boleh melihat rekod ketidakhadiran
+                        dan surat amaran bagi kelas yang ditetapkan. Pilih <strong>Semua Kelas (Pentadbir)</strong>
+                        untuk Guru Besar / PK HEM.</span>
+                    </div>
+
+                    <div id="guru-no-admin-warning" class="hidden flex items-start gap-2 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-800 font-medium">
+                        <i class="fa-solid fa-triangle-exclamation text-amber-500 mt-0.5 shrink-0"></i>
+                        <span>Belum ada pentadbir ditetapkan. Sementara itu mana-mana guru boleh mengubah
+                        tetapan ini. Sila tetapkan sekurang-kurangnya seorang pentadbir sekarang.</span>
+                    </div>
+
+                    <div>
+                        <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Pilih Guru</label>
+                        <select id="guru-select" onchange="onGuruSelect()" class="w-full border border-gray-300 rounded-lg px-2.5 py-2 text-xs font-medium focus:ring-2 focus:ring-gray-400 outline-none bg-white">
+                            <option value="">— Pilih guru —</option>
+                        </select>
+                    </div>
+
+                    <div id="guru-assign-wrapper" class="hidden space-y-2">
+                        <label class="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-gray-200 cursor-pointer hover:bg-gray-50">
+                            <input type="checkbox" id="guru-is-admin" onchange="onGuruAdminToggle()" class="accent-indigo-600">
+                            <span class="text-[11px] font-bold text-gray-700">Semua Kelas (Pentadbir)</span>
+                        </label>
+
+                        <div id="guru-class-list-wrapper">
+                            <label class="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Kelas Ditetapkan</label>
+                            <div id="guru-class-list" class="max-h-56 overflow-y-auto border border-gray-200 rounded-lg p-1.5 space-y-0.5"></div>
+                        </div>
+
+                        <p id="guru-error" class="hidden text-[11px] font-bold text-red-600 bg-red-50 border border-red-200 rounded-lg px-2 py-1.5"></p>
+
+                        <button onclick="saveGuru()" id="guru-save-btn" class="w-full px-3 py-2 text-[11px] font-bold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-sm">
+                            <i class="fa-solid fa-floppy-disk mr-1"></i>Simpan Tetapan Guru
+                        </button>
+                    </div>
+
+                    <div>
+                        <div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Tetapan Semasa</div>
+                        <div id="guru-current-list" class="rounded-lg border border-gray-100 divide-y divide-gray-100"></div>
                     </div>
                 </div>
 

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ tahap_label }} — {{ pupil.name }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: "Times New Roman", Times, serif;
+            font-size: 12pt;
+            line-height: 1.5;
+            color: #000;
+            background: #e5e7eb;
+            margin: 0;
+            padding: 20px 10px;
+        }
+        .sheet {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            padding: 20mm 18mm;
+            background: #fff;
+            box-shadow: 0 2px 12px rgba(0,0,0,.15);
+        }
+        .kepala { text-align: center; border-bottom: 3px double #000; padding-bottom: 8px; margin-bottom: 14px; }
+        .kepala h1 { font-size: 15pt; margin: 0 0 2px; letter-spacing: .5px; }
+        .kepala p { margin: 0; font-size: 10pt; }
+        .meta { display: flex; justify-content: space-between; font-size: 11pt; margin-bottom: 16px; }
+        .kepada { margin-bottom: 14px; }
+        .kepada strong { display: block; }
+        .tajuk {
+            font-weight: bold; text-transform: uppercase; text-decoration: underline;
+            margin: 16px 0 12px; line-height: 1.4;
+        }
+        p.perenggan { margin: 0 0 10px; text-align: justify; }
+        .no { display: inline-block; width: 22px; vertical-align: top; }
+        table.tarikh { width: 100%; border-collapse: collapse; margin: 10px 0 14px; font-size: 11pt; }
+        table.tarikh th, table.tarikh td { border: 1px solid #000; padding: 4px 8px; text-align: left; }
+        table.tarikh th { background: #f3f4f6; }
+        .kotak-amaran {
+            border: 2px solid #000; padding: 10px 12px; margin: 14px 0;
+            font-weight: bold; text-align: center;
+        }
+        .tandatangan { margin-top: 36px; }
+        .garis { border-bottom: 1px dotted #000; width: 60mm; margin-bottom: 3px; height: 28px; }
+        .kaki { margin-top: 30px; border-top: 1px solid #999; padding-top: 6px; font-size: 9pt; color: #444; }
+        .cetak {
+            position: fixed; top: 12px; right: 12px; z-index: 10;
+            font-family: system-ui, sans-serif;
+        }
+        .cetak button {
+            padding: 8px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+            border: none; border-radius: 8px; background: #e11d48; color: #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,.2);
+        }
+        .cetak button:hover { background: #be123c; }
+        .nota-isi {
+            font-family: system-ui, sans-serif; font-size: 10pt; color: #92400e;
+            background: #fef3c7; border: 1px solid #fcd34d; border-radius: 6px;
+            padding: 8px 10px; margin-bottom: 14px;
+        }
+        @media print {
+            body { background: #fff; padding: 0; }
+            .sheet { width: auto; min-height: auto; margin: 0; padding: 0; box-shadow: none; }
+            .cetak, .nota-isi { display: none !important; }
+            @page { size: A4; margin: 18mm; }
+        }
+    </style>
+</head>
+<body>
+    <div class="cetak"><button onclick="window.print()">Cetak / Simpan PDF</button></div>
+
+    <div class="sheet">
+        <div class="nota-isi">
+            Sila lengkapkan ruangan bertanda <strong>[ ... ]</strong> sebelum mencetak: nombor rujukan,
+            alamat sekolah, dan nama penandatangan. Semak juga senarai tarikh di bawah.
+        </div>
+
+        <div class="kepala">
+            <h1>{{ school }}</h1>
+            <p>[ Alamat Sekolah ]</p>
+            <p>Tel: [ ... ] &nbsp;&bull;&nbsp; E-mel: [ ... ]</p>
+        </div>
+
+        <div class="meta">
+            <span>Ruj. Kami: [ ... ]</span>
+            <span>Tarikh: {{ today_label }}</span>
+        </div>
+
+        <div class="kepada">
+            Kepada,
+            <strong>Ibu Bapa / Penjaga kepada</strong>
+            <strong>{{ pupil.name }}</strong>
+            <span>Kelas {{ pupil.class }} &mdash; Sesi {{ session }}</span>
+        </div>
+
+        <p>Tuan / Puan,</p>
+
+        <div class="tajuk">
+            {{ tahap_label }}: Tidak Hadir Ke Sekolah Tanpa Sebab Yang Sah
+        </div>
+
+        <p class="perenggan">
+            <span class="no">1.</span>Dengan segala hormatnya perkara di atas adalah dirujuk.
+        </p>
+
+        <p class="perenggan">
+            <span class="no">2.</span>Sukacita dimaklumkan bahawa anak jagaan tuan/puan,
+            <strong>{{ pupil.name }}</strong> dari kelas <strong>{{ pupil.class }}</strong>,
+            telah tidak hadir ke sekolah sebanyak <strong>{{ pupil.ponteng }} hari</strong>
+            tanpa sebab yang sah{% if pupil.total_absences > pupil.ponteng %}
+            (daripada sejumlah {{ pupil.total_absences }} hari ketidakhadiran){% endif %}.
+            Sehingga tarikh surat ini dikeluarkan, pihak sekolah tidak menerima sebarang
+            surat rasmi daripada ibu bapa/penjaga, surat pengesahan doktor, atau slip rawatan
+            klinik/hospital bagi tarikh-tarikh berikut:
+        </p>
+
+        <table class="tarikh">
+            <thead>
+                <tr><th style="width:40px">Bil</th><th>Tarikh Tidak Hadir Tanpa Sebab</th></tr>
+            </thead>
+            <tbody>
+                {% for d in dates %}
+                <tr><td>{{ loop.index }}</td><td>{{ d }}</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+        <div class="kotak-amaran">
+            {{ tahap_label | upper }}<br>
+            ({{ pupil.ponteng }} hari tanpa sebab &mdash; paras amaran: {{ threshold }} hari)
+        </div>
+
+        <p class="perenggan">
+            <span class="no">3.</span>Sehubungan dengan itu, pihak sekolah memohon kerjasama tuan/puan
+            untuk memastikan anak jagaan tuan/puan hadir ke sekolah setiap hari persekolahan.
+            Sekiranya ketidakhadiran tersebut disebabkan oleh keuzuran atau urusan yang tidak dapat
+            dielakkan, sila kemukakan surat atau dokumen sokongan kepada guru kelas dengan segera
+            supaya rekod kehadiran dapat dikemas kini.
+        </p>
+
+        <p class="perenggan">
+            <span class="no">4.</span>Perhatian dan kerjasama tuan/puan dalam perkara ini amatlah
+            dihargai dan didahului dengan ucapan terima kasih.
+        </p>
+
+        <p class="perenggan" style="margin-top:14px">Sekian, terima kasih.</p>
+
+        <p class="perenggan"><strong>&ldquo;BERKHIDMAT UNTUK NEGARA&rdquo;</strong></p>
+
+        <p class="perenggan">Saya yang menjalankan amanah,</p>
+
+        <div class="tandatangan">
+            <div class="garis"></div>
+            <div>( [ Nama Penandatangan ] )</div>
+            <div>[ Jawatan ]</div>
+            <div>{{ school }}</div>
+        </div>
+
+        <div class="kaki">
+            <strong>Slip Akuan Terima</strong> &mdash; sila potong, tandatangan dan kembalikan kepada guru kelas.<br><br>
+            Saya ________________________________ , ibu bapa / penjaga kepada
+            <strong>{{ pupil.name }}</strong> ({{ pupil.class }}), mengaku telah menerima
+            {{ tahap_label | lower }} ini.<br><br>
+            Tandatangan: ____________________ &nbsp;&nbsp; Tarikh: ______________
+        </div>
+    </div>
+</body>
+</html>

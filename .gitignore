@@ -1,6 +1,24 @@
 # Credentials - NEVER commit
-credentials.json
+# Pattern, not just the exact name: a copy like "credentials (2).json" carries
+# the same service-account private key.
+credentials*.json
+*.json.bak
 .env
+
+# Pupil data - NEVER commit. This repository is public, and these files hold
+# the names, classes and attendance of every child in the school.
+merged_sheet1.csv
+Backup Data GS/
+*.xlsx
+*.xls
+
+# Screenshots of the live system (show pupil names)
+SS/
+
+# Runtime settings — holds the parent-form short codes, which act as
+# credentials for the public form. Must not be committed or overwritten
+# on deploy, or every shared link dies.
+bot_settings.json
 
 # Python
 __pycache__/

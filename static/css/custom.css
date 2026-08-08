@@ -194,9 +194,114 @@ table tbody tr:hover { background: #f8fafc; }
 
 /* Sidebar scrollbar */
 #tab-content-student::-webkit-scrollbar,
-#tab-content-class::-webkit-scrollbar { width: 3px; }
+#tab-content-class::-webkit-scrollbar,
+#tab-content-sebab::-webkit-scrollbar { width: 3px; }
 #tab-content-student::-webkit-scrollbar-thumb,
-#tab-content-class::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+#tab-content-class::-webkit-scrollbar-thumb,
+#tab-content-sebab::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 9999px; }
+
+/* Rekod Ketidakhadiran: status filter chips */
+.sebab-filter {
+    padding: 0.25rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.625rem;
+    font-weight: 700;
+    color: #6b7280;
+    background: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    transition: all 0.15s;
+}
+
+.sebab-filter:hover:not(.active) {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.sebab-filter.active {
+    background: #e11d48;
+    border-color: #e11d48;
+    color: #ffffff;
+}
+
+/* ---------------------------------------------------------------------------
+   Stacking order (keep in sync with the z-* classes in index.html):
+     30  header, sidebar toggle
+     40  loading overlay, sidebar overlay
+     50  sidebar panel
+     60  settings / login / unmarked modals
+     70  rekod sebab / hantar ke group modals
+    100  toasts — must stay on top, or a success message fires behind the very
+         modal that triggered it and is blurred by that modal's backdrop.
+   Set here as well as in the markup so it survives the Tailwind CDN being
+   unavailable offline; the id selector also outranks any utility class.
+   --------------------------------------------------------------------------- */
+#toast-container { z-index: 100; }
+
+/* ---------------------------------------------------------------------------
+   Full-width sidebar — for teachers who find the 380px panel too small.
+   Widens the panel and scales up the small utility type used throughout the
+   summary, so nothing has to be re-authored at a second size.
+   --------------------------------------------------------------------------- */
+#sidebar-panel.sidebar-full {
+    width: 100%;
+    max-width: 100%;
+}
+
+.sidebar-full .text-\[8px\]  { font-size: 10px; }
+.sidebar-full .text-\[9px\]  { font-size: 11px; }
+.sidebar-full .text-\[10px\] { font-size: 12px; }
+.sidebar-full .text-\[11px\] { font-size: 13px; }
+.sidebar-full .text-xs       { font-size: 14px; }
+.sidebar-full .text-sm       { font-size: 16px; }
+.sidebar-full .text-base     { font-size: 20px; }
+.sidebar-full .text-lg       { font-size: 24px; }
+
+/* Roomier padding once there is space for it */
+.sidebar-full #tab-content-student,
+.sidebar-full #tab-content-class,
+.sidebar-full #tab-content-rmt,
+.sidebar-full #tab-content-sebab { padding: 1.25rem; }
+
+/* Flow the cards into columns instead of one tall stack */
+.sidebar-full .sebab-pupil-list,
+.sidebar-full .amaran-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    gap: 0.5rem;
+    align-items: start;
+}
+
+/* space-y-* adds margin-top to siblings, which misaligns grid rows */
+.sidebar-full .sebab-pupil-list > * + *,
+.sidebar-full .amaran-list > * + * { margin-top: 0; }
+
+/* Keep the controls readable rather than stretched across a wide screen */
+.sidebar-full .sebab-controls-row,
+.sidebar-full #sebab-view-rekod > div:not(.sebab-wide),
+.sidebar-full #sebab-view-amaran > div:not(.sebab-wide),
+.sidebar-full #sebab-auth-form,
+.sidebar-full #sebab-auth-info { max-width: 640px; }
+
+.sidebar-full #sidebar-full-icon::before { content: "\f78c"; }
+
+/* Rekod tab: sub-view switcher */
+.sebab-view-btn {
+    flex: 1;
+    padding: 0.375rem 0.5rem;
+    border-radius: 0.375rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: #6b7280;
+    transition: all 0.15s;
+}
+
+.sebab-view-btn:hover:not(.active) { color: #374151; }
+
+.sebab-view-btn.active {
+    background: #ffffff;
+    color: #e11d48;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+}
 
 /* Attendance bar */
 .attendance-bar {

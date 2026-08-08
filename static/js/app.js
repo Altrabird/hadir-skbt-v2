@@ -435,6 +435,24 @@ function renderClassTable(summary) {
 let sidebarOpen = false;
 let sidebarStudentsList = null; // cached from API
 
+function applySidebarFull(full) {
+    const panel = document.getElementById("sidebar-panel");
+    const btn = document.getElementById("sidebar-full-btn");
+    panel.classList.toggle("sidebar-full", full);
+    if (btn) btn.title = full ? "Paparan kecil" : "Paparan penuh";
+    try { localStorage.setItem("sidebarFull", full ? "1" : "0"); } catch { /* ignore */ }
+}
+
+function toggleSidebarFull() {
+    applySidebarFull(!document.getElementById("sidebar-panel").classList.contains("sidebar-full"));
+}
+
+function restoreSidebarFull() {
+    let saved = null;
+    try { saved = localStorage.getItem("sidebarFull"); } catch { /* ignore */ }
+    if (saved === "1") applySidebarFull(true);
+}
+
 function toggleSidebar() {
     const panel = document.getElementById("sidebar-panel");
     const overlay = document.getElementById("sidebar-overlay");
@@ -445,6 +463,7 @@ function toggleSidebar() {
     overlay.classList.toggle("hidden", !sidebarOpen);
     toggleBtn.classList.toggle("hidden", sidebarOpen);
 
+    if (sidebarOpen) restoreSidebarFull();
     if (sidebarOpen && !sidebarStudentsList) {
         loadSidebarData();
     }
@@ -455,7 +474,7 @@ async function loadSidebarData() {
         const res = await apiFetch("/api/summary/students-list");
         sidebarStudentsList = await res.json();
 
-        // Populate class dropdowns in both tabs
+        // Populate class dropdowns in all tabs
         const classFilter = document.getElementById("sidebar-class-filter");
         const classSelect = document.getElementById("sidebar-class-select");
 
@@ -465,11 +484,13 @@ async function loadSidebarData() {
         });
         classFilter.innerHTML = classOpts;
         classSelect.innerHTML = classOpts;
+        // The Rekod tab's selects are populated by applySebabAuth(), scoped to
+        // the classes the logged-in teacher is assigned to.
     } catch { /* toast shown */ }
 }
 
 function switchSidebarTab(tab) {
-    const tabs = ["student", "class", "rmt"];
+    const tabs = ["student", "class", "rmt", "sebab"];
     tabs.forEach(t => {
         const btn = document.getElementById(`tab-${t}`);
         const content = document.getElementById(`tab-content-${t}`);
@@ -490,6 +511,11 @@ function switchSidebarTab(tab) {
             picker.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
             loadRmtSummary();
         }
+    }
+
+    // Init reason-recording prerequisites on first open
+    if (tab === "sebab") {
+        initSebabTab();
     }
 }
 
@@ -862,6 +888,831 @@ function downloadRmtExcel() {
 }
 
 // ---------------------------------------------------------------------------
+// Sidebar: Rekod Ketidakhadiran Tab
+// ---------------------------------------------------------------------------
+let _sebabData = null;      // last API payload
+let _sebabFilter = "semua"; // semua | tiada_sebab | belum_disahkan | sah
+
+const SEBAB_STATUS = {
+    tiada_sebab:    { label: "Tiada Sebab",   color: "red",     icon: "fa-circle-exclamation" },
+    belum_disahkan: { label: "Belum Disah",   color: "amber",   icon: "fa-clock" },
+    sah:            { label: "Sah",           color: "emerald", icon: "fa-circle-check" },
+    tidak_sah:      { label: "Tidak Sah",     color: "red",     icon: "fa-circle-xmark" },
+};
+
+function sebabEmptyState(msg, icon = "fa-clipboard-list") {
+    return `
+        <div class="text-center py-8">
+            <i class="fa-solid ${icon} text-3xl text-gray-200"></i>
+            <p class="text-xs text-gray-400 mt-2">${msg}</p>
+        </div>`;
+}
+
+function setSebabFilter(filter) {
+    _sebabFilter = filter;
+    ["semua", "tiada_sebab", "belum_disahkan", "tidak_sah", "sah"].forEach(f => {
+        document.getElementById(`sebab-filter-${f}`).classList.toggle("active", f === filter);
+    });
+    renderKetidakhadiran();
+}
+
+async function loadKetidakhadiran() {
+    const className = document.getElementById("sebab-class-select").value;
+    const container = document.getElementById("sebab-content");
+    const controls = document.getElementById("sebab-controls");
+
+    if (!className) {
+        _sebabData = null;
+        controls.classList.add("hidden");
+        container.innerHTML = sebabEmptyState("Pilih kelas untuk melihat rekod ketidakhadiran.");
+        return;
+    }
+
+    const from = document.getElementById("sebab-date-from").value;
+    const to = document.getElementById("sebab-date-to").value;
+    if (from && to && from > to) {
+        controls.classList.add("hidden");
+        container.innerHTML = sebabEmptyState("Tarikh mula selepas tarikh tamat.", "fa-triangle-exclamation");
+        return;
+    }
+
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-rose-200 border-t-rose-600 rounded-full animate-spin mx-auto"></div></div>`;
+
+    try {
+        const params = new URLSearchParams();
+        if (from) params.set("from", from);
+        if (to) params.set("to", to);
+        const qs = params.toString() ? `?${params}` : "";
+        const res = await apiFetch(`/api/kelas/${encodeURIComponent(className)}/ketidakhadiran${qs}`);
+        _sebabData = await res.json();
+
+        if (_sebabData.error) {
+            controls.classList.add("hidden");
+            container.innerHTML = sebabEmptyState(escapeHtml(_sebabData.error), "fa-triangle-exclamation");
+            return;
+        }
+
+        controls.classList.toggle("hidden", _sebabData.total_absences === 0);
+        renderKetidakhadiran();
+    } catch {
+        controls.classList.add("hidden");
+        container.innerHTML = sebabEmptyState("Gagal memuatkan rekod.", "fa-triangle-exclamation");
+    }
+}
+
+function renderKetidakhadiran() {
+    const container = document.getElementById("sebab-content");
+    const d = _sebabData;
+    if (!d) return;
+
+    if (d.total_absences === 0) {
+        container.innerHTML = sebabEmptyState(
+            `Tiada ketidakhadiran direkodkan untuk ${escapeHtml(d.class)} dalam tempoh ini.`,
+            "fa-face-smile"
+        );
+        return;
+    }
+
+    const sessionIcon = d.session === "Pagi" ? "fa-sun" : "fa-moon";
+    // Server-side figure: unverified reasons still count, and a verified
+    // "Ponteng" counts too — so it can't be derived from `counts` here.
+    const ponteng = d.total_ponteng || 0;
+
+    // Filter pupils by the selected status
+    const pupils = _sebabFilter === "semua"
+        ? d.pupils
+        : d.pupils.filter(p => p.counts[_sebabFilter] > 0);
+
+    let pupilCards = "";
+    pupils.forEach((p, pi) => {
+        const records = _sebabFilter === "semua"
+            ? p.records
+            : p.records.filter(r => r.status === _sebabFilter);
+        const oi = d.pupils.indexOf(p);   // index into the unfiltered list
+
+        let chips = "";
+        records.forEach((r, ri) => {
+            const meta = SEBAB_STATUS[r.status];
+            const [, mm, dd] = r.date.split("-");
+            const detailId = `sebab-detail-${pi}-${ri}`;
+            chips += `
+                <button onclick="toggleSebabDetail('${detailId}')"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-${meta.color}-100 text-${meta.color}-700 border border-${meta.color}-200 hover:bg-${meta.color}-200 transition">
+                    ${dd}/${mm}
+                </button>`;
+        });
+
+        let details = "";
+        records.forEach((r, ri) => {
+            const meta = SEBAB_STATUS[r.status];
+            const detailId = `sebab-detail-${pi}-${ri}`;
+            const rows = [];
+            if (r.kategori) rows.push(`<div><span class="text-gray-400">Kategori:</span> ${escapeHtml(r.kategori)}</div>`);
+            if (r.sub_kategori) rows.push(`<div><span class="text-gray-400">Sub-alasan:</span> ${escapeHtml(r.sub_kategori)}</div>`);
+            if (r.kira_ponteng && r.status !== "tiada_sebab") rows.push(`<div class="text-red-600 font-bold"><i class="fa-solid fa-triangle-exclamation mr-0.5"></i>Dikira ponteng</div>`);
+            if (r.catatan) rows.push(`<div><span class="text-gray-400">Catatan:</span> ${escapeHtml(r.catatan)}</div>`);
+            if (r.jenis_bukti) rows.push(`<div><span class="text-gray-400">Bukti:</span> ${escapeHtml(r.jenis_bukti)}</div>`);
+            if (r.rujukan_bukti) rows.push(`<div><span class="text-gray-400">Rujukan:</span> ${escapeHtml(r.rujukan_bukti)}</div>`);
+            if (r.direkod_oleh) rows.push(`<div><span class="text-gray-400">Direkod oleh:</span> ${escapeHtml(r.direkod_oleh)}</div>`);
+            if (r.sumber === "Borang Waris") {
+                rows.push(`<div class="mt-1 px-1.5 py-1 rounded bg-sky-50 border border-sky-200 text-sky-700 font-bold">
+                    <i class="fa-solid fa-inbox mr-0.5"></i>Daripada Waris &mdash; sila semak surat/slip asal sebelum sahkan.
+                </div>`);
+            }
+            if (!rows.length) rows.push(`<div class="text-gray-400 italic">Belum ada sebab direkodkan.</div>`);
+
+            details += `
+                <div id="${detailId}" class="hidden bg-gray-50 border border-gray-200 rounded-lg p-2 mt-1 text-[10px] space-y-0.5">
+                    <div class="flex items-center gap-1 font-bold text-${meta.color}-600 mb-1">
+                        <i class="fa-solid ${meta.icon}"></i>
+                        <span>${escapeHtml(r.date_label)}</span>
+                        <span class="ml-auto">${meta.label}</span>
+                    </div>
+                    ${rows.join("")}
+                    <button onclick="openSebabModal(${oi}, '${r.date}')"
+                        class="mt-1 px-2 py-1 rounded text-[10px] font-bold bg-rose-500 text-white hover:bg-rose-600 transition">
+                        <i class="fa-solid fa-file-pen mr-0.5"></i>${r.kategori ? "Kemas Kini" : "Rekod"} Sebab
+                    </button>
+                </div>`;
+        });
+
+        pupilCards += `
+            <div class="border border-gray-200 rounded-lg p-2">
+                <div class="flex items-start gap-1.5 mb-1.5">
+                    <span class="w-4 text-[9px] text-gray-400 text-right mt-0.5">${pi + 1}</span>
+                    <div class="flex-1 min-w-0">
+                        <span class="text-[11px] font-bold text-gray-700 break-words">${escapeHtml(p.name)}</span>
+                        ${p.still_enrolled === false ? `<span class="ml-1 px-1 py-0.5 rounded bg-slate-100 text-slate-500 text-[8px] font-bold align-middle">BEKAS MURID</span>` : ""}
+                    </div>
+                    <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black ${p.ponteng > 0 ? "bg-red-100 text-red-600" : "bg-gray-100 text-gray-500"}">
+                        ${p.total} hari${p.ponteng > 0 ? ` &bull; ${p.ponteng} ponteng` : ""}
+                    </span>
+                </div>
+                <div class="flex flex-wrap items-center gap-1">
+                    ${chips}
+                    <button onclick="openSebabModal(${oi})"
+                        class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 hover:bg-slate-200 transition"
+                        title="Rekod sebab untuk beberapa tarikh">
+                        <i class="fa-solid fa-plus"></i> Sebab
+                    </button>
+                </div>
+                ${details}
+            </div>`;
+    });
+
+    if (!pupilCards) {
+        pupilCards = sebabEmptyState("Tiada murid dalam tapisan ini.", "fa-filter");
+    }
+
+    container.innerHTML = `
+        <!-- Class Header -->
+        <div class="bg-gradient-to-r from-rose-500 to-red-600 rounded-xl p-3 text-white">
+            <div class="flex items-center gap-2 mb-0.5">
+                <i class="fa-solid fa-clipboard-list text-sm text-rose-200"></i>
+                <span class="text-xs font-bold">${escapeHtml(d.class)}</span>
+            </div>
+            <span class="text-[10px] text-rose-200">
+                <i class="fa-solid ${sessionIcon} mr-0.5"></i>Sesi ${d.session}
+                &bull; ${d.school_days} hari rekod
+                &bull; ${d.total_absences} ketidakhadiran
+                &bull; ${d.total_pupils} murid
+            </span>
+        </div>
+
+        <!-- Status Breakdown — one box per state, mirroring the filter chips -->
+        <div class="grid grid-cols-4 gap-1.5">
+            <button onclick="setSebabFilter('tiada_sebab')" class="bg-red-50 hover:bg-red-100 rounded-lg p-2 text-center transition">
+                <p class="text-base font-black text-red-600">${d.counts.tiada_sebab}</p>
+                <p class="text-[8px] font-bold text-red-500 leading-tight">Tiada<br>Sebab</p>
+            </button>
+            <button onclick="setSebabFilter('belum_disahkan')" class="bg-amber-50 hover:bg-amber-100 rounded-lg p-2 text-center transition">
+                <p class="text-base font-black text-amber-600">${d.counts.belum_disahkan}</p>
+                <p class="text-[8px] font-bold text-amber-500 leading-tight">Belum<br>Disahkan</p>
+            </button>
+            <button onclick="setSebabFilter('tidak_sah')" class="bg-red-50 hover:bg-red-100 rounded-lg p-2 text-center transition">
+                <p class="text-base font-black text-red-600">${d.counts.tidak_sah}</p>
+                <p class="text-[8px] font-bold text-red-500 leading-tight">Tidak<br>Sah</p>
+            </button>
+            <button onclick="setSebabFilter('sah')" class="bg-emerald-50 hover:bg-emerald-100 rounded-lg p-2 text-center transition">
+                <p class="text-base font-black text-emerald-600">${d.counts.sah}</p>
+                <p class="text-[8px] font-bold text-emerald-500 leading-tight">Sebab<br>Sah</p>
+            </button>
+        </div>
+
+        ${ponteng > 0 ? `
+        <div class="flex items-start gap-2 px-2.5 py-2 bg-red-50 border border-red-200 rounded-lg text-[10px] text-red-700 font-medium">
+            <i class="fa-solid fa-triangle-exclamation text-red-500 mt-0.5 shrink-0"></i>
+            <span><strong>${ponteng} hari</strong> masih dikira ponteng &mdash; termasuk sebab yang belum disahkan. Sahkan setelah menerima surat rasmi atau slip klinik.</span>
+        </div>` : ""}
+
+        <!-- Pupil List -->
+        <div>
+            <div class="flex items-center gap-1 mb-1.5">
+                <i class="fa-solid fa-list-ol text-[10px] text-gray-400"></i>
+                <span class="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Senarai Murid</span>
+                <span class="text-[9px] text-gray-400 ml-auto">Tekan tarikh untuk butiran</span>
+            </div>
+            <div class="sebab-pupil-list space-y-1.5">${pupilCards}</div>
+        </div>
+    `;
+}
+
+function toggleSebabDetail(id) {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle("hidden");
+}
+
+// --- Teacher identity (required before viewing or recording) -------------
+// Authorisation lives in the server session; the password is never retained.
+let _sebabTeacher = "";
+let _sebabClasses = [];
+let _sebabIsAdmin = false;
+let _sebabOptions = null;
+let _sebabTeachersLoaded = false;
+
+function applySebabAuth(d) {
+    _sebabTeacher = d.teacher || "";
+    _sebabClasses = d.classes || [];
+    _sebabIsAdmin = !!d.is_admin;
+
+    const authed = !!_sebabTeacher;
+    document.getElementById("sebab-auth-form").classList.toggle("hidden", authed);
+    document.getElementById("sebab-auth-info").classList.toggle("hidden", !authed);
+    document.getElementById("sebab-authed").classList.toggle("hidden", !authed);
+    document.getElementById("amaran-tetapan-panel").classList.toggle("hidden", !_sebabIsAdmin);
+
+    if (!authed) return;
+
+    document.getElementById("sebab-auth-name").textContent =
+        _sebabTeacher + (_sebabIsAdmin ? " (Pentadbir)" : "");
+
+    // Only offer classes this teacher may actually open
+    const opts = _sebabClasses.map(c =>
+        `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join("");
+    const rekodSel = document.getElementById("sebab-class-select");
+    rekodSel.innerHTML = (_sebabClasses.length === 1 ? "" : '<option value="">— Pilih kelas —</option>') + opts;
+    document.getElementById("amaran-class-select").innerHTML =
+        `<option value="">${_sebabIsAdmin ? "Semua Kelas" : "Semua Kelas Saya"}</option>` + opts;
+
+    // One class? Open it straight away — no reason to make them pick.
+    if (_sebabClasses.length === 1) {
+        rekodSel.value = _sebabClasses[0];
+        loadKetidakhadiran();
+    }
+}
+
+async function initSebabTab() {
+    if (!_sebabOptions) {
+        try {
+            const res = await apiFetch("/api/sebab/options");
+            _sebabOptions = await res.json();
+        } catch { /* toast shown */ }
+    }
+    // Restore an existing session (e.g. after a page reload)
+    if (!_sebabTeacher) {
+        try {
+            const res = await fetch("/api/settings/whoami");
+            const d = await res.json();
+            if (d.logged_in) applySebabAuth(d);
+        } catch { /* offline */ }
+    }
+    if (!_sebabTeachersLoaded) {
+        try {
+            const res = await apiFetch("/api/settings/teachers");
+            const teachers = await res.json();
+            const sel = document.getElementById("sebab-auth-teacher");
+            sel.innerHTML = '<option value="">— Pilih nama guru —</option>';
+            teachers.forEach(t => {
+                sel.innerHTML += `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`;
+            });
+            _sebabTeachersLoaded = true;
+        } catch { /* toast shown */ }
+    }
+}
+
+async function sebabLogin() {
+    const teacher = document.getElementById("sebab-auth-teacher").value;
+    const password = document.getElementById("sebab-auth-password").value;
+    const err = document.getElementById("sebab-auth-error");
+
+    const fail = msg => {
+        err.textContent = msg;
+        err.classList.remove("hidden");
+    };
+    if (!teacher) return fail("Sila pilih nama guru.");
+    if (!password) return fail("Sila masukkan kata laluan.");
+
+    try {
+        const res = await fetch("/api/settings/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ teacher, password }),
+        });
+        const d = await res.json();
+        if (!d.success) return fail(d.error || "Kata laluan salah.");
+
+        err.classList.add("hidden");
+        document.getElementById("sebab-auth-password").value = "";
+        applySebabAuth(d);
+
+        if (!d.is_admin && (!d.classes || !d.classes.length)) {
+            fail("Anda belum ditetapkan sebagai guru kelas. Sila hubungi pentadbir sistem.");
+            document.getElementById("sebab-authed").classList.add("hidden");
+        }
+    } catch {
+        fail("Ralat sambungan.");
+    }
+}
+
+async function sebabLogout() {
+    try { await fetch("/api/settings/logout", { method: "POST" }); } catch { /* ignore */ }
+    _amaranData = null;
+    _sebabData = null;
+    applySebabAuth({});
+}
+
+// --- Rekod Sebab modal ---------------------------------------------------
+let _sebabModalPupil = null;
+
+function openSebabModal(pupilIndex, presetDate) {
+    if (!_sebabTeacher) {
+        showToast("Sila kenal pasti diri anda dahulu untuk merekod sebab.", "error");
+        document.getElementById("sebab-auth-teacher").focus();
+        return;
+    }
+    const p = _sebabData && _sebabData.pupils[pupilIndex];
+    if (!p) return;
+    _sebabModalPupil = p;
+
+    document.getElementById("sebab-modal-name").textContent = p.name;
+    document.getElementById("sebab-modal-class").textContent =
+        `${_sebabData.class} • ${p.total} hari tidak hadir • ${p.ponteng} tiada sebab sah`;
+
+    // Date checkboxes — newest first, preset one ticked if given
+    const box = document.getElementById("sebab-modal-dates");
+    box.innerHTML = p.records.map((r, i) => {
+        const meta = SEBAB_STATUS[r.status];
+        const checked = presetDate && r.date === presetDate ? "checked" : "";
+        return `
+            <label class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-gray-50 cursor-pointer">
+                <input type="checkbox" class="sebab-date-cb accent-rose-500" value="${r.date}" ${checked}>
+                <span class="text-[11px] text-gray-700 flex-1">${escapeHtml(r.date_label)}</span>
+                <span class="text-[9px] font-bold text-${meta.color}-600">${meta.label}</span>
+            </label>`;
+    }).join("");
+
+    // Options
+    const opts = _sebabOptions || { kategori: [], jenis_bukti: [], status_sah: [] };
+    const kSel = document.getElementById("sebab-modal-kategori");
+    kSel.innerHTML = opts.kategori
+        .map(k => `<option value="${escapeHtml(k.label)}">${escapeHtml(k.label)}</option>`).join("");
+    kSel.onchange = onSebabKategoriChange;
+
+    const bSel = document.getElementById("sebab-modal-bukti");
+    bSel.innerHTML = '<option value="">— Tiada —</option>' +
+        opts.jenis_bukti.map(b => `<option value="${escapeHtml(b)}">${escapeHtml(b)}</option>`).join("");
+
+    const sSel = document.getElementById("sebab-modal-status");
+    sSel.innerHTML = opts.status_sah
+        .map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+
+    // Prefill from the existing entry for the preset date, if any
+    const existing = presetDate ? p.records.find(r => r.date === presetDate) : null;
+    if (existing && existing.kategori) {
+        kSel.value = existing.kategori;
+        populateSebabSub(existing.sub_kategori || "");
+        bSel.value = existing.jenis_bukti || "";
+        sSel.value = existing.status_sah || "";
+        document.getElementById("sebab-modal-catatan").value = existing.catatan || "";
+        document.getElementById("sebab-modal-rujukan").value = existing.rujukan_bukti || "";
+    } else {
+        document.getElementById("sebab-modal-catatan").value = "";
+        document.getElementById("sebab-modal-rujukan").value = "";
+    }
+    if (!existing || !existing.kategori) populateSebabSub("");
+    updateSebabKategoriHint();
+
+    document.getElementById("sebab-modal-error").classList.add("hidden");
+    document.getElementById("sebab-modal").classList.remove("hidden");
+}
+
+function populateSebabSub(selected) {
+    const kategori = document.getElementById("sebab-modal-kategori").value;
+    const k = ((_sebabOptions && _sebabOptions.kategori) || []).find(x => x.label === kategori);
+    const sel = document.getElementById("sebab-modal-sub");
+    const subs = (k && k.sub) || [];
+    sel.innerHTML = (subs.length > 1 ? '<option value="">— Pilih sub-alasan —</option>' : "") +
+        subs.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+    if (selected && subs.indexOf(selected) !== -1) sel.value = selected;
+}
+
+function onSebabKategoriChange() {
+    populateSebabSub("");
+    updateSebabKategoriHint();
+}
+
+function updateSebabKategoriHint() {
+    const val = document.getElementById("sebab-modal-kategori").value;
+    const hint = document.getElementById("sebab-modal-kategori-hint");
+    const k = ((_sebabOptions && _sebabOptions.kategori) || []).find(x => x.label === val);
+    if (!k) { hint.textContent = ""; return; }
+    if (k.kira_ponteng) {
+        hint.className = "text-[10px] mt-1 text-red-600 font-bold";
+        hint.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-0.5"></i>Dikira sebagai ponteng walaupun disahkan — menyumbang kepada surat amaran.`;
+    } else {
+        hint.className = "text-[10px] mt-1 text-emerald-600 font-medium";
+        hint.innerHTML = `<i class="fa-solid fa-circle-check mr-0.5"></i>Tidak dikira sebagai ponteng.`;
+    }
+}
+
+function toggleAllSebabDates() {
+    const cbs = [...document.querySelectorAll(".sebab-date-cb")];
+    const allOn = cbs.every(cb => cb.checked);
+    cbs.forEach(cb => { cb.checked = !allOn; });
+    document.getElementById("sebab-modal-toggle-all").textContent =
+        allOn ? "Pilih Semua" : "Kosongkan";
+}
+
+function closeSebabModal() {
+    document.getElementById("sebab-modal").classList.add("hidden");
+    _sebabModalPupil = null;
+}
+
+async function submitSebab() {
+    const err = document.getElementById("sebab-modal-error");
+    const btn = document.getElementById("sebab-modal-save");
+    const fail = msg => {
+        err.textContent = msg;
+        err.classList.remove("hidden");
+        btn.disabled = false;
+    };
+
+    const dates = [...document.querySelectorAll(".sebab-date-cb")]
+        .filter(cb => cb.checked).map(cb => cb.value);
+    if (!dates.length) return fail("Sila pilih sekurang-kurangnya satu tarikh.");
+    if (!_sebabModalPupil) return fail("Ralat: murid tidak dikenal pasti.");
+
+    btn.disabled = true;
+    err.classList.add("hidden");
+
+    try {
+        const res = await fetch("/api/sebab", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                class: _sebabData.class,
+                name: _sebabModalPupil.name,
+                dates,
+                kategori: document.getElementById("sebab-modal-kategori").value,
+                sub_kategori: document.getElementById("sebab-modal-sub").value,
+                catatan: document.getElementById("sebab-modal-catatan").value,
+                jenis_bukti: document.getElementById("sebab-modal-bukti").value,
+                rujukan_bukti: document.getElementById("sebab-modal-rujukan").value,
+                status_sah: document.getElementById("sebab-modal-status").value,
+            }),
+        });
+        const d = await res.json();
+        if (!d.success) {
+            if (res.status === 403) sebabLogout();
+            return fail(d.error || "Gagal menyimpan rekod.");
+        }
+
+        closeSebabModal();
+        showToast(`${d.recorded} rekod sebab disimpan.`, "success");
+        await loadKetidakhadiran();
+    } catch {
+        fail("Ralat sambungan.");
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// --- Hantar ke Group Kelas ----------------------------------------------
+let _borangData = null;
+
+function openBorangModal() {
+    const cls = document.getElementById("sebab-class-select").value;
+    if (!cls) {
+        showToast("Sila pilih kelas dahulu.", "error");
+        return;
+    }
+    // Leave the date empty so the server picks the latest date that actually
+    // has absences — "today" is often a weekend or holiday.
+    document.getElementById("borang-date").value = "";
+    document.getElementById("borang-date").max = new Date().toISOString().slice(0, 10);
+    document.getElementById("borang-error").classList.add("hidden");
+    document.getElementById("borang-modal").classList.remove("hidden");
+    loadBorangMessage();
+}
+
+function pickBorangDate(date) {
+    document.getElementById("borang-date").value = date;
+    loadBorangMessage();
+}
+
+function renderBorangDates() {
+    const d = _borangData;
+    const box = document.getElementById("borang-dates");
+    const counter = document.getElementById("borang-dates-count");
+    const dates = (d && d.dates) || [];
+
+    counter.textContent = dates.length ? `${dates.length} tarikh` : "";
+    if (!dates.length) {
+        box.innerHTML = `<div class="px-2 py-3 text-center text-[10px] text-gray-400">
+            Tiada ketidakhadiran direkodkan bagi kelas ini.</div>`;
+        return;
+    }
+    box.innerHTML = dates.map(x => {
+        const active = x.date === d.date;
+        return `<button onclick="pickBorangDate('${x.date}')"
+            class="w-full flex items-center gap-2 px-2 py-1.5 text-left transition ${active ? "bg-emerald-50" : "hover:bg-gray-50"}">
+            <i class="fa-solid ${active ? "fa-circle-check text-emerald-600" : "fa-calendar-day text-gray-300"} text-[10px] shrink-0"></i>
+            <span class="text-[11px] ${active ? "font-bold text-emerald-700" : "text-gray-700"} flex-1 truncate">${escapeHtml(x.label)}</span>
+            <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-red-100 text-red-600">${x.count}</span>
+        </button>`;
+    }).join("");
+}
+
+function closeBorangModal() {
+    document.getElementById("borang-modal").classList.add("hidden");
+}
+
+async function loadBorangMessage() {
+    const cls = document.getElementById("sebab-class-select").value;
+    const date = document.getElementById("borang-date").value;
+    const err = document.getElementById("borang-error");
+    const box = document.getElementById("borang-message");
+    box.value = "Memuatkan...";
+
+    try {
+        const res = await apiFetch(`/api/kelas/${encodeURIComponent(cls)}/borang?date=${encodeURIComponent(date)}`);
+        _borangData = await res.json();
+        if (_borangData.error) {
+            err.textContent = _borangData.error;
+            err.classList.remove("hidden");
+            box.value = "";
+            return;
+        }
+        err.classList.add("hidden");
+        box.value = _borangData.message;
+        document.getElementById("borang-date").value = _borangData.date;
+
+        let ringkasan;
+        if (_borangData.absent_count) {
+            ringkasan = `<i class="fa-solid fa-user-xmark text-red-500 mr-1"></i><strong>${_borangData.absent_count}</strong> murid tidak hadir pada ${escapeHtml(_borangData.date_label)}.`;
+        } else if (_borangData.recorded) {
+            ringkasan = `<i class="fa-solid fa-face-smile text-emerald-500 mr-1"></i>Semua murid hadir pada ${escapeHtml(_borangData.date_label)}.`;
+        } else {
+            ringkasan = `<i class="fa-solid fa-circle-info text-amber-500 mr-1"></i>Tiada rekod kehadiran pada ${escapeHtml(_borangData.date_label)} — cuti atau belum diisi.`;
+        }
+        document.getElementById("borang-summary").innerHTML = ringkasan;
+        renderBorangDates();
+    } catch {
+        box.value = "";
+        err.textContent = "Gagal memuatkan mesej.";
+        err.classList.remove("hidden");
+    }
+}
+
+async function copyBorangMessage() {
+    if (!_borangData) return;
+    const btn = document.getElementById("borang-copy-btn");
+    try {
+        await navigator.clipboard.writeText(_borangData.message);
+    } catch {
+        // Older WebViews: fall back to selecting the textarea
+        const box = document.getElementById("borang-message");
+        box.removeAttribute("readonly");
+        box.select();
+        document.execCommand("copy");
+        box.setAttribute("readonly", "readonly");
+    }
+    btn.innerHTML = '<i class="fa-solid fa-check mr-1"></i>Disalin!';
+    setTimeout(() => { btn.innerHTML = '<i class="fa-solid fa-copy mr-1"></i>Salin Mesej'; }, 1800);
+}
+
+function openWhatsApp() {
+    if (!_borangData) return;
+    window.open(`https://wa.me/?text=${encodeURIComponent(_borangData.message)}`, "_blank");
+}
+
+async function resetBorangLink() {
+    const cls = document.getElementById("sebab-class-select").value;
+    if (!cls) return;
+    if (!confirm(`Jana pautan baharu untuk ${cls}?\n\nPautan lama yang telah dihantar ke group akan TIDAK BOLEH digunakan lagi.`)) return;
+    try {
+        const res = await fetch(`/api/kelas/${encodeURIComponent(cls)}/borang/jana-semula`, { method: "POST" });
+        const d = await res.json();
+        if (!d.success) {
+            showToast(d.error || "Gagal menjana pautan baharu.", "error");
+            return;
+        }
+        showToast("Pautan baharu dijana. Sila hantar semula ke group.", "success");
+        await loadBorangMessage();
+    } catch {
+        showToast("Ralat sambungan.", "error");
+    }
+}
+
+// --- Surat Amaran --------------------------------------------------------
+let _amaranData = null;
+let _amaranTetapan = null;
+
+function switchSebabView(view) {
+    ["rekod", "amaran"].forEach(v => {
+        document.getElementById(`sebab-view-${v}`).classList.toggle("hidden", v !== view);
+        document.getElementById(`sebab-view-btn-${v}`).classList.toggle("active", v === view);
+    });
+    if (view === "amaran") {
+        if (!_amaranTetapan) loadAmaranTetapan();
+        if (!_amaranData) loadAmaran();
+    }
+}
+
+async function loadAmaranTetapan() {
+    try {
+        const res = await apiFetch("/api/amaran/tetapan");
+        _amaranTetapan = await res.json();
+        const box = document.getElementById("amaran-tetapan-rows");
+        box.innerHTML = Object.keys(_amaranTetapan.thresholds).sort().map(t => `
+            <div class="flex items-center gap-1.5">
+                <span class="text-[10px] font-bold text-gray-500 w-4">T${t}</span>
+                <span class="text-[10px] text-gray-600 flex-1 truncate">${escapeHtml(_amaranTetapan.labels[t] || "")}</span>
+                <input type="number" min="1" max="365" id="amaran-t-${t}" value="${_amaranTetapan.thresholds[t]}"
+                    class="w-14 border border-gray-300 rounded px-1.5 py-1 text-[11px] text-center focus:ring-2 focus:ring-rose-400 outline-none">
+                <span class="text-[10px] text-gray-400">hari</span>
+            </div>`).join("");
+    } catch { /* toast shown */ }
+}
+
+async function saveAmaranTetapan() {
+    const err = document.getElementById("amaran-tetapan-error");
+    const fail = msg => { err.textContent = msg; err.classList.remove("hidden"); };
+    if (!_sebabTeacher) return fail("Sila kenal pasti diri anda dahulu.");
+
+    const thresholds = {};
+    Object.keys(_amaranTetapan.thresholds).forEach(t => {
+        thresholds[t] = document.getElementById(`amaran-t-${t}`).value;
+    });
+
+    try {
+        const res = await fetch("/api/amaran/tetapan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ thresholds }),
+        });
+        const d = await res.json();
+        if (!d.success) {
+            if (res.status === 403) sebabLogout();
+            return fail(d.error || "Gagal menyimpan paras.");
+        }
+        err.classList.add("hidden");
+        showToast("Paras amaran dikemas kini.", "success");
+        _amaranTetapan = null;
+        await loadAmaranTetapan();
+        await loadAmaran();
+    } catch {
+        fail("Ralat sambungan.");
+    }
+}
+
+async function loadAmaran() {
+    const container = document.getElementById("amaran-content");
+    const cls = document.getElementById("amaran-class-select").value;
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-rose-200 border-t-rose-600 rounded-full animate-spin mx-auto"></div></div>`;
+    try {
+        const qs = cls ? `?class=${encodeURIComponent(cls)}` : "";
+        const res = await apiFetch(`/api/amaran/senarai${qs}`);
+        _amaranData = await res.json();
+        if (_amaranData.error) {
+            container.innerHTML = sebabEmptyState(escapeHtml(_amaranData.error), "fa-triangle-exclamation");
+            return;
+        }
+        renderAmaran();
+    } catch {
+        container.innerHTML = sebabEmptyState("Gagal memuatkan senarai amaran.", "fa-triangle-exclamation");
+    }
+}
+
+function renderAmaran() {
+    const container = document.getElementById("amaran-content");
+    const d = _amaranData;
+    if (!d) return;
+
+    if (!d.pupils.length) {
+        container.innerHTML = sebabEmptyState(
+            "Tiada murid mencapai paras amaran. Rekod kehadiran sekolah dalam keadaan baik.",
+            "fa-face-smile"
+        );
+        return;
+    }
+
+    let cards = "";
+    d.pupils.forEach((p, i) => {
+        const urgent = p.perlu_tindakan;
+        const color = urgent ? "red" : "gray";
+        const issued = p.tahap_dikeluarkan > 0
+            ? `<div class="text-[9px] text-gray-500 mt-1">
+                   <i class="fa-solid fa-check text-emerald-500 mr-0.5"></i>
+                   ${escapeHtml(d.labels[p.tahap_dikeluarkan] || "")} dikeluarkan ${escapeHtml(p.amaran_terakhir)}
+                   ${p.amaran_oleh ? `oleh ${escapeHtml(p.amaran_oleh)}` : ""}
+               </div>`
+            : `<div class="text-[9px] text-amber-600 mt-1"><i class="fa-solid fa-circle-exclamation mr-0.5"></i>Belum ada surat dikeluarkan</div>`;
+
+        cards += `
+            <div class="border ${urgent ? "border-red-300 bg-red-50/40" : "border-gray-200"} rounded-lg p-2">
+                <div class="flex items-start gap-1.5">
+                    <span class="w-4 text-[9px] text-gray-400 text-right mt-0.5">${i + 1}</span>
+                    <div class="flex-1 min-w-0">
+                        <span class="text-[11px] font-bold text-gray-800 break-words">${escapeHtml(p.name)}</span>
+                        ${p.still_enrolled === false ? `<span class="ml-1 px-1 py-0.5 rounded bg-slate-100 text-slate-500 text-[8px] font-bold align-middle">BEKAS MURID</span>` : ""}
+                        <div class="text-[9px] text-gray-500">${escapeHtml(p.class)}</div>
+                    </div>
+                    <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-${color}-100 text-${color}-700">
+                        ${p.ponteng} ponteng
+                    </span>
+                </div>
+                <div class="mt-1.5 px-1.5 py-1 rounded bg-${color}-100 text-${color}-700 text-[10px] font-bold text-center">
+                    Layak: ${escapeHtml(p.tahap_label)}
+                </div>
+                ${issued}
+                <div class="flex gap-1 mt-1.5">
+                    <button onclick="printSurat(${i})" class="flex-1 px-2 py-1.5 rounded text-[10px] font-bold bg-white border border-gray-300 text-gray-700 hover:bg-gray-50 transition">
+                        <i class="fa-solid fa-print mr-0.5"></i>Cetak Surat
+                    </button>
+                    <button onclick="markAmaranIssued(${i})" ${urgent ? "" : "disabled"}
+                        class="flex-1 px-2 py-1.5 rounded text-[10px] font-bold bg-rose-500 text-white hover:bg-rose-600 transition disabled:opacity-40 disabled:cursor-not-allowed">
+                        <i class="fa-solid fa-stamp mr-0.5"></i>Tanda Dikeluarkan
+                    </button>
+                </div>
+            </div>`;
+    });
+
+    container.innerHTML = `
+        <div class="grid grid-cols-2 gap-1.5 mb-2">
+            <div class="bg-red-50 rounded-lg p-2 text-center">
+                <p class="text-lg font-black text-red-600">${d.perlu_tindakan}</p>
+                <p class="text-[9px] font-bold text-red-500">Perlu Tindakan</p>
+            </div>
+            <div class="bg-gray-50 rounded-lg p-2 text-center">
+                <p class="text-lg font-black text-gray-700">${d.pupils.length}</p>
+                <p class="text-[9px] font-bold text-gray-500">Capai Paras Amaran</p>
+            </div>
+        </div>
+        <div class="amaran-list space-y-1.5">${cards}</div>`;
+}
+
+function printSurat(i) {
+    const p = _amaranData && _amaranData.pupils[i];
+    if (!p) return;
+    const url = `/surat-amaran/${encodeURIComponent(p.class)}/${encodeURIComponent(p.name)}?tahap=${p.tahap_layak}`;
+    window.open(url, "_blank");
+}
+
+async function markAmaranIssued(i) {
+    if (!_sebabTeacher) {
+        showToast("Sila kenal pasti diri anda dahulu.", "error");
+        return;
+    }
+    const p = _amaranData && _amaranData.pupils[i];
+    if (!p) return;
+    if (!confirm(`Sahkan ${_amaranData.labels[p.tahap_layak]} telah dikeluarkan kepada ${p.name}?`)) return;
+
+    try {
+        const res = await fetch("/api/amaran/rekod", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                class: p.class, name: p.name,
+                tahap: p.tahap_layak, jumlah_ponteng: p.ponteng,
+            }),
+        });
+        const d = await res.json();
+        if (!d.success) {
+            if (res.status === 403) sebabLogout();
+            showToast(d.error || "Gagal merekod surat amaran.", "error");
+            return;
+        }
+        showToast("Surat amaran direkodkan.", "success");
+        await loadAmaran();
+    } catch {
+        showToast("Ralat sambungan.", "error");
+    }
+}
+
+function downloadKetidakhadiran() {
+    const className = document.getElementById("sebab-class-select").value;
+    if (!className) return;
+    const from = document.getElementById("sebab-date-from").value;
+    const to = document.getElementById("sebab-date-to").value;
+    const params = new URLSearchParams();
+    if (from) params.set("from", from);
+    if (to) params.set("to", to);
+    const qs = params.toString() ? `?${params}` : "";
+    window.location.href = `/api/export/ketidakhadiran/${encodeURIComponent(className)}${qs}`;
+}
+
+// ---------------------------------------------------------------------------
 // Settings Modal: Login + Student Management
 // ---------------------------------------------------------------------------
 let _settingsMode = "add";
@@ -957,7 +1808,7 @@ function closeSettings() {
 
 function switchSettingsMode(mode) {
     _settingsMode = mode;
-    ["add", "remove", "notif"].forEach(m => {
+    ["add", "remove", "notif", "guru"].forEach(m => {
         const btn = document.getElementById(`settings-tab-${m}`);
         const content = document.getElementById(`settings-mode-${m}`);
         if (m === mode) {
@@ -969,16 +1820,114 @@ function switchSettingsMode(mode) {
         }
     });
 
-    // Hide class selector for notif mode (not needed)
+    // Hide class selector for modes that don't use it
     const classWrapper = document.getElementById("settings-class-wrapper");
     if (classWrapper) {
-        classWrapper.classList.toggle("hidden", mode === "notif");
+        classWrapper.classList.toggle("hidden", mode === "notif" || mode === "guru");
     }
 
     if (mode === "notif") {
         loadNotifikasiStatus();
+    } else if (mode === "guru") {
+        loadGuruList();
     } else {
         loadSettingsStudents();
+    }
+}
+
+// --- Class-teacher assignment -------------------------------------------
+let _guruData = null;
+
+async function loadGuruList() {
+    try {
+        const res = await apiFetch("/api/settings/guru");
+        _guruData = await res.json();
+    } catch {
+        return;
+    }
+
+    document.getElementById("guru-no-admin-warning")
+        .classList.toggle("hidden", !!_guruData.has_admin);
+
+    const sel = document.getElementById("guru-select");
+    sel.innerHTML = '<option value="">— Pilih guru —</option>' +
+        _guruData.teachers.map(t =>
+            `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join("");
+
+    const saveBtn = document.getElementById("guru-save-btn");
+    saveBtn.disabled = !_guruData.can_manage;
+    saveBtn.classList.toggle("opacity-50", !_guruData.can_manage);
+
+    document.getElementById("guru-current-list").innerHTML =
+        _guruData.teachers.map(t => {
+            const label = t.is_admin
+                ? '<span class="text-indigo-600 font-bold">Semua Kelas (Pentadbir)</span>'
+                : (t.classes.length
+                    ? escapeHtml(t.classes.join(", "))
+                    : '<span class="text-amber-600">Belum ditetapkan</span>');
+            return `<div class="flex items-start gap-2 px-2 py-1.5 text-[10px]">
+                        <span class="font-semibold text-gray-700 flex-1 min-w-0 break-words">${escapeHtml(t.name)}</span>
+                        <span class="text-gray-500 text-right shrink-0 max-w-[55%] break-words">${label}</span>
+                    </div>`;
+        }).join("");
+}
+
+function onGuruSelect() {
+    const name = document.getElementById("guru-select").value;
+    const wrapper = document.getElementById("guru-assign-wrapper");
+    document.getElementById("guru-error").classList.add("hidden");
+
+    if (!name || !_guruData) {
+        wrapper.classList.add("hidden");
+        return;
+    }
+    const t = _guruData.teachers.find(x => x.name === name);
+    if (!t) { wrapper.classList.add("hidden"); return; }
+
+    document.getElementById("guru-is-admin").checked = t.is_admin;
+    document.getElementById("guru-class-list").innerHTML =
+        _guruData.all_classes.map(c => `
+            <label class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-gray-50 cursor-pointer">
+                <input type="checkbox" class="guru-class-cb accent-indigo-600" value="${escapeHtml(c)}"
+                    ${t.classes.indexOf(c) !== -1 ? "checked" : ""}>
+                <span class="text-[11px] text-gray-700">${escapeHtml(c)}</span>
+            </label>`).join("");
+
+    wrapper.classList.remove("hidden");
+    onGuruAdminToggle();
+}
+
+function onGuruAdminToggle() {
+    const isAdmin = document.getElementById("guru-is-admin").checked;
+    document.getElementById("guru-class-list-wrapper").classList.toggle("hidden", isAdmin);
+}
+
+async function saveGuru() {
+    const err = document.getElementById("guru-error");
+    const fail = msg => { err.textContent = msg; err.classList.remove("hidden"); };
+    const teacher = document.getElementById("guru-select").value;
+    if (!teacher) return fail("Sila pilih guru.");
+
+    const isAdmin = document.getElementById("guru-is-admin").checked;
+    const classes = isAdmin
+        ? "SEMUA"
+        : [...document.querySelectorAll(".guru-class-cb")].filter(cb => cb.checked).map(cb => cb.value);
+
+    try {
+        const res = await fetch("/api/settings/guru", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ teacher, classes }),
+        });
+        const d = await res.json();
+        if (!d.success) return fail(d.error || "Gagal menyimpan tetapan.");
+        err.classList.add("hidden");
+        showToast(`Tetapan guru kelas dikemas kini: ${teacher}.`, "success");
+        await loadGuruList();
+        document.getElementById("guru-select").value = teacher;
+        onGuruSelect();
+    } catch {
+        fail("Ralat sambungan.");
     }
 }
 

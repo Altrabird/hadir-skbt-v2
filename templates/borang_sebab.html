@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <title>Borang Sebab Ketidakhadiran{% if class_name %} — {{ class_name }}{% endif %}</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        body {
+            margin: 0; padding: 16px 12px 40px;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+            background: #f1f5f9; color: #1f2937; font-size: 15px; line-height: 1.5;
+        }
+        .kad {
+            max-width: 460px; margin: 0 auto; background: #fff;
+            border-radius: 14px; box-shadow: 0 2px 14px rgba(0,0,0,.08); overflow: hidden;
+        }
+        .kepala {
+            background: linear-gradient(135deg, #4f46e5, #2563eb);
+            color: #fff; padding: 18px 16px;
+        }
+        .kepala h1 { margin: 0 0 3px; font-size: 17px; }
+        .kepala p { margin: 0; font-size: 12px; opacity: .85; }
+        .isi { padding: 16px; }
+        label { display: block; font-size: 12px; font-weight: 700; color: #4b5563; margin-bottom: 5px; }
+        .medan { margin-bottom: 14px; }
+        input, select, textarea {
+            width: 100%; padding: 11px 12px; font-size: 15px; font-family: inherit;
+            border: 1px solid #d1d5db; border-radius: 9px; background: #fff; color: #1f2937;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none; border-color: #4f46e5; box-shadow: 0 0 0 3px rgba(79,70,229,.15);
+        }
+        textarea { resize: vertical; min-height: 68px; }
+        .bantuan { font-size: 11px; color: #6b7280; margin-top: 4px; }
+        button {
+            width: 100%; padding: 13px; font-size: 15px; font-weight: 700; font-family: inherit;
+            color: #fff; background: #4f46e5; border: none; border-radius: 9px; cursor: pointer;
+        }
+        button:hover { background: #4338ca; }
+        button:disabled { opacity: .55; cursor: not-allowed; }
+        .nota {
+            display: flex; gap: 8px; padding: 10px 12px; margin-bottom: 16px;
+            background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 9px;
+            font-size: 12px; color: #1e40af;
+        }
+        .mesej { padding: 12px; border-radius: 9px; font-size: 13px; margin-bottom: 14px; font-weight: 600; }
+        .ralat { background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; }
+        .jaya  { background: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; font-weight: 500; }
+        .kaki { text-align: center; font-size: 11px; color: #9ca3af; margin-top: 16px; }
+        .tamat { text-align: center; padding: 30px 16px; }
+        .tamat .ikon { font-size: 38px; }
+        .tamat h2 { font-size: 16px; margin: 10px 0 6px; }
+        .tamat p { font-size: 13px; color: #6b7280; margin: 0; }
+    </style>
+</head>
+<body>
+<div class="kad">
+    {% if invalid %}
+        <div class="kepala"><h1>Pautan Tidak Sah</h1></div>
+        <div class="tamat">
+            <div class="ikon">🔒</div>
+            <h2>Pautan ini tidak sah atau telah tamat tempoh</h2>
+            <p>Sila dapatkan pautan terkini daripada guru kelas anak anda.</p>
+        </div>
+    {% else %}
+        <div class="kepala">
+            <h1>Borang Sebab Ketidakhadiran</h1>
+            <p>{{ class_name }} &bull; {{ school }}</p>
+        </div>
+
+        <div class="isi">
+            <div id="skrin-borang">
+                <div class="nota">
+                    <span>ℹ️</span>
+                    <span>Borang ini untuk ibu bapa/penjaga memaklumkan sebab anak tidak hadir.
+                    Maklumat akan disemak dan disahkan oleh guru kelas. Sila kemukakan
+                    surat atau slip klinik asal kepada guru kelas.</span>
+                </div>
+
+                <div id="mesej-ralat" class="mesej ralat" style="display:none"></div>
+
+                <div class="medan">
+                    <label for="murid">Nama Murid</label>
+                    <select id="murid">
+                        <option value="">— Memuatkan senarai —</option>
+                    </select>
+                </div>
+
+                <div class="medan">
+                    <label for="tarikh">Tarikh Tidak Hadir</label>
+                    <input type="date" id="tarikh">
+                    <div class="bantuan">Pilih tarikh anak anda tidak hadir ke sekolah.</div>
+                </div>
+
+                <div class="medan">
+                    <label for="kategori">Sebab Ketidakhadiran</label>
+                    <select id="kategori" onchange="isiSubAlasan()">
+                        <option value="">— Pilih sebab —</option>
+                        {% for k in kategori %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+                    </select>
+                </div>
+
+                <div class="medan" id="medan-sub" style="display:none">
+                    <label for="sub">Butiran Sebab</label>
+                    <select id="sub"></select>
+                </div>
+
+                <div class="medan">
+                    <label for="bukti">Dokumen Sokongan</label>
+                    <select id="bukti">
+                        <option value="">— Tiada / akan dihantar kemudian —</option>
+                        {% for b in jenis_bukti %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+                    </select>
+                    <div class="bantuan">Nyatakan dokumen yang akan diserahkan kepada guru kelas.</div>
+                </div>
+
+                <div class="medan">
+                    <label for="catatan">Catatan Tambahan <span style="font-weight:400;color:#9ca3af">(pilihan)</span></label>
+                    <textarea id="catatan" maxlength="300" placeholder="Contoh: Demam panas, dirawat di Klinik Kesihatan."></textarea>
+                </div>
+
+                <div class="medan">
+                    <label for="penghantar">Nama Ibu Bapa / Penjaga</label>
+                    <input type="text" id="penghantar" placeholder="Nama penuh anda">
+                </div>
+
+                <button id="btn-hantar" onclick="hantar()">Hantar Maklumat</button>
+            </div>
+
+            <div id="skrin-jaya" class="tamat" style="display:none">
+                <div class="ikon">✅</div>
+                <h2>Maklumat Diterima</h2>
+                <p id="teks-jaya"></p>
+                <p style="margin-top:14px">
+                    <a href="#" onclick="location.reload();return false;">Isi untuk tarikh atau anak yang lain</a>
+                </p>
+            </div>
+        </div>
+    {% endif %}
+</div>
+<div class="kaki">{{ school }}</div>
+
+{% if not invalid %}
+<script>
+const TOKEN = {{ token | tojson }};
+const KATEGORI = {{ kategori | tojson }};
+
+function isiSubAlasan() {
+    const kategori = document.getElementById("kategori").value;
+    const subs = KATEGORI[kategori] || [];
+    const sel = document.getElementById("sub");
+    const medan = document.getElementById("medan-sub");
+    if (!subs.length) { medan.style.display = "none"; sel.innerHTML = ""; return; }
+    sel.innerHTML = (subs.length > 1 ? '<option value="">— Pilih butiran —</option>' : "") +
+        subs.map(s => `<option>${s}</option>`).join("");
+    medan.style.display = "block";
+}
+
+function ralat(msg) {
+    const el = document.getElementById("mesej-ralat");
+    el.textContent = msg;
+    el.style.display = "block";
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function muatMurid() {
+    const sel = document.getElementById("murid");
+    try {
+        const res = await fetch(`/api/borang/${encodeURIComponent(TOKEN)}/murid`);
+        const d = await res.json();
+        if (d.error) { sel.innerHTML = '<option value="">— Ralat —</option>'; return ralat(d.error); }
+        sel.innerHTML = '<option value="">— Pilih nama anak anda —</option>' +
+            d.students.map(n => `<option>${n}</option>`).join("");
+    } catch {
+        sel.innerHTML = '<option value="">— Ralat sambungan —</option>';
+    }
+}
+
+async function hantar() {
+    const btn = document.getElementById("btn-hantar");
+    document.getElementById("mesej-ralat").style.display = "none";
+
+    const body = {
+        name: document.getElementById("murid").value,
+        date: document.getElementById("tarikh").value,
+        kategori: document.getElementById("kategori").value,
+        sub_kategori: document.getElementById("sub").value,
+        jenis_bukti: document.getElementById("bukti").value,
+        catatan: document.getElementById("catatan").value,
+        penghantar: document.getElementById("penghantar").value.trim(),
+    };
+    if (!body.name) return ralat("Sila pilih nama murid.");
+    if (!body.date) return ralat("Sila pilih tarikh tidak hadir.");
+    if (!body.kategori) return ralat("Sila pilih sebab ketidakhadiran.");
+    if (!body.sub_kategori) return ralat("Sila pilih butiran sebab.");
+    if (!body.penghantar) return ralat("Sila isikan nama anda.");
+
+    btn.disabled = true;
+    btn.textContent = "Menghantar...";
+    try {
+        const res = await fetch(`/api/borang/${encodeURIComponent(TOKEN)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const d = await res.json();
+        if (!d.success) { ralat(d.error || "Gagal menghantar maklumat."); return; }
+        document.getElementById("skrin-borang").style.display = "none";
+        document.getElementById("teks-jaya").textContent = d.message;
+        document.getElementById("skrin-jaya").style.display = "block";
+    } catch {
+        ralat("Ralat sambungan. Sila cuba lagi.");
+    } finally {
+        btn.disabled = false;
+        btn.textContent = "Hantar Maklumat";
+    }
+}
+
+document.getElementById("tarikh").max = new Date().toISOString().slice(0, 10);
+muatMurid();
+</script>
+{% endif %}
+</body>
+</html>
