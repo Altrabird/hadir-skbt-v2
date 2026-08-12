@@ -297,10 +297,9 @@ def invalidate_cache(sheet_name: str | None = None):
 #   "SEMUA"               -> school-wide access (Guru Besar / PK HEM)
 #   empty                 -> no access to absence records until assigned
 TEACHER_ROLE_ALL = "SEMUA"
-# Extra token usable alongside a class list, e.g. "2 KRITIS, BERTUGAS".
-# Grants a school-wide view of the DAILY summary only — not per-class reason
-# records, warning letters, or settings. Duty teachers rotate, so handing every
-# one of them SEMUA would undo the class scoping.
+# Still parsed so a sheet that already carries it keeps working, but it no
+# longer grants anything: the absence-and-reason register is open to every
+# signed-in teacher, which is what the duty rotation actually needed.
 TEACHER_ROLE_DUTY = "BERTUGAS"
 _TEACHER_CACHE_KEY = "__teachers__"
 
@@ -1151,9 +1150,6 @@ def api_set_guru():
                     chosen.append(c)
             assignment = ", ".join(chosen)
 
-        # Duty-teacher flag rides alongside whatever the assignment is
-        if bool(payload.get("duty")):
-            assignment = f"{assignment}, {TEACHER_ROLE_DUTY}".lstrip(", ")
 
         # Locate the teacher's row in column A and write column B beside it
         client = get_spreadsheet_client()
@@ -2141,48 +2137,52 @@ def api_kelas_ketidakhadiran(class_name: str):
         return jsonify({"error": str(e)}), 500
 
 
-def build_rumusan_harian(date_str: str, allowed: list[str] | None) -> dict:
-    """Every absence on one day, with the reason and whether it is verified.
+def build_rekod_sebab(date_from: str, date_to: str,
+                      class_name: str | None = None,
+                      status_filter: str | None = None) -> dict:
+    """The consolidated absence-and-reason register, school-wide.
 
-    Built for the duty teacher: the pupils with no reason at all come first,
-    because those are the ones an intervention session is for.
+    One row per pupil per absent day, carrying whatever reason has been
+    recorded — by a guardian through the public form, or by the class teacher —
+    and whether the class teacher has accepted it.
     """
     records = get_data_from_sheet(SHEET_ATTENDANCE)
     sebab_index = build_sebab_index()
 
-    # Latest date with any marked attendance, on or before the one asked for
-    marked_dates = {
-        str(r.get("DATE", ""))[:10]
-        for r in records
-        if (allowed is None or str(r.get("CLASS", "")).strip() in allowed)
-    }
-    marked_dates.discard("")
-    if date_str not in marked_dates:
-        earlier = sorted(d for d in marked_dates if d <= date_str)
-        date_str = earlier[-1] if earlier else date_str
-
-    seen: set[tuple[str, str]] = set()
-    pupils = []
+    seen: set[tuple[str, str, str]] = set()
+    rows = []
     counts = {"tiada_sebab": 0, "belum_disahkan": 0, "sah": 0, "tidak_sah": 0}
+    daripada_waris = 0
 
     for r in records:
-        if str(r.get("DATE", ""))[:10] != date_str:
-            continue
         if str(r.get("STATUS", "")).strip() != STATUS_ABSENT:
             continue
+        date_only = str(r.get("DATE", ""))[:10]
+        if not date_only:
+            continue
+        if date_from and date_only < date_from:
+            continue
+        if date_to and date_only > date_to:
+            continue
         cls = str(r.get("CLASS", "")).strip()
-        if allowed is not None and cls not in allowed:
+        if class_name and cls != class_name:
             continue
         name = str(r.get("NAME", "")).strip()
-        key = (cls, name.upper())
+        key = (date_only, cls, name.upper())
         if key in seen:
             continue
         seen.add(key)
 
-        entry = sebab_index.get((date_str, name.upper()))
+        entry = sebab_index.get((date_only, name.upper()))
         status = resolve_sebab_status(entry)
         counts[status] += 1
-        pupils.append({
+        sumber = entry["sumber"] if entry else ""
+        if sumber == SUMBER_WARIS:
+            daripada_waris += 1
+
+        rows.append({
+            "date": date_only,
+            "date_label": format_malay_date(date_only),
             "name": name,
             "class": cls,
             "session": get_session(cls),
@@ -2194,88 +2194,118 @@ def build_rumusan_harian(date_str: str, allowed: list[str] | None) -> dict:
             "jenis_bukti": entry["jenis_bukti"] if entry else "",
             "rujukan_bukti": entry["rujukan_bukti"] if entry else "",
             "direkod_oleh": entry["direkod_oleh"] if entry else "",
-            "sumber": entry["sumber"] if entry else "",
+            "direkod_pada": entry["direkod_pada"] if entry else "",
+            "sumber": sumber,
         })
 
-    # No reason first — that is the intervention list — then awaiting proof
+    total = len(rows)
+    if status_filter:
+        rows = [x for x in rows if x["status"] == status_filter]
+
+    # Newest day first; within a day the pupils with no reason lead, since
+    # those are the ones an intervention session is for.
     order = {"tiada_sebab": 0, "belum_disahkan": 1, "tidak_sah": 2, "sah": 3}
-    pupils.sort(key=lambda p: (order.get(p["status"], 9), p["class"], p["name"]))
+    rows.sort(key=lambda x: (x["date"], -order.get(x["status"], 9),
+                             x["class"], x["name"]), reverse=True)
 
     return {
-        "date": date_str,
-        "date_label": format_malay_date(date_str),
-        "total_absent": len(pupils),
+        "from": date_from,
+        "to": date_to,
+        "class": class_name or "",
+        "status": status_filter or "",
+        "total_absences": total,
+        "shown": len(rows),
         "counts": counts,
+        "daripada_waris": daripada_waris,
         "perlu_intervensi": counts["tiada_sebab"],
-        "pupils": pupils,
+        "rows": rows,
     }
 
 
-@app.route("/api/rumusan/harian")
-def api_rumusan_harian():
-    """Daily absence summary with reasons. ?date=YYYY-MM-DD (default: the last
-    school day before today)."""
+def _rekod_args():
+    """Shared query parsing. Returns (params, error_message)."""
+    date_from = str(request.args.get("from", "")).strip()
+    date_to = str(request.args.get("to", "")).strip()
+    for label, value in (("from", date_from), ("to", date_to)):
+        if value and not _valid_date(value):
+            return None, f"Tarikh '{label}' tidak sah (guna YYYY-MM-DD)"
+    if date_from and date_to and date_from > date_to:
+        return None, "Tarikh mula selepas tarikh tamat"
+
+    status = str(request.args.get("status", "")).strip()
+    if status and status not in ("tiada_sebab", "belum_disahkan", "sah", "tidak_sah"):
+        return None, "Status tidak sah"
+
+    return {
+        "date_from": date_from,
+        "date_to": date_to,
+        "class_name": str(request.args.get("class", "")).strip() or None,
+        "status_filter": status or None,
+    }, None
+
+
+@app.route("/api/rekod-sebab")
+def api_rekod_sebab():
+    """Absence-and-reason register. Any signed-in teacher sees the whole school:
+    the duty teacher rotates, so gating this behind a per-teacher setting only
+    created work without protecting anything the staff room does not know."""
     info, err = require_teacher()
     if err:
         return err
     try:
-        date_str = str(request.args.get("date", "")).strip()
-        if date_str and not _valid_date(date_str):
-            return jsonify({"error": "Tarikh tidak sah (guna YYYY-MM-DD)"}), 400
-        if not date_str:
-            # "Semalam" — build_rumusan_harian walks back to the last marked day
-            date_str = (datetime.datetime.now(tz=TIMEZONE)
-                        - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-        # A duty teacher sees the whole school for this view only
-        allowed = None if (info["is_admin"] or info.get("is_duty")) else list(info["classes"])
-        data = build_rumusan_harian(date_str, allowed)
-        data["skop"] = "Seluruh Sekolah" if allowed is None else ", ".join(allowed)
-        return jsonify(data)
+        params, msg = _rekod_args()
+        if msg:
+            return jsonify({"error": msg}), 400
+        return jsonify(build_rekod_sebab(**params))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/export/rumusan/<date_str>")
-def api_export_rumusan(date_str: str):
-    """CSV of the daily summary — the intervention list first."""
+@app.route("/api/export/rekod-sebab")
+def api_export_rekod_sebab():
+    """CSV of the register, honouring the same filters as the on-screen list."""
     info, err = require_teacher()
     if err:
         return Response("Sila log masuk.", status=401)
-    if not _valid_date(date_str):
-        return Response("Tarikh tidak sah", status=400)
     try:
-        allowed = None if (info["is_admin"] or info.get("is_duty")) else list(info["classes"])
-        data = build_rumusan_harian(date_str, allowed)
-        if not data["pupils"]:
-            return Response("Tiada ketidakhadiran bagi tarikh ini", status=404)
+        params, msg = _rekod_args()
+        if msg:
+            return Response(msg, status=400)
+        data = build_rekod_sebab(**params)
+        if not data["rows"]:
+            return Response("Tiada rekod bagi tapisan ini", status=404)
 
         label = {"tiada_sebab": "Tiada Sebab", "belum_disahkan": SAH_BELUM,
                  "sah": SAH_YA, "tidak_sah": SAH_TIDAK}
-        rows = []
-        for i, p in enumerate(data["pupils"], 1):
-            rows.append({
+        out = []
+        for i, x in enumerate(data["rows"], 1):
+            out.append({
                 "Bil": i,
-                "Nama": p["name"],
-                "Kelas": p["class"],
-                "Sesi": p["session"],
-                "Status Sebab": label.get(p["status"], p["status"]),
-                "Perlu Intervensi": "Ya" if p["status"] == "tiada_sebab" else "Tidak",
-                "Kategori": p["kategori"],
-                "Sub Alasan": p["sub_kategori"],
-                "Catatan": p["catatan"],
-                "Jenis Bukti": p["jenis_bukti"],
-                "Rujukan Bukti": p["rujukan_bukti"],
-                "Direkod Oleh": p["direkod_oleh"],
-                "Sumber": p["sumber"],
+                "Tarikh": x["date"],
+                "Hari": x["date_label"],
+                "Nama": x["name"],
+                "Kelas": x["class"],
+                "Sesi": x["session"],
+                "Status Sebab": label.get(x["status"], x["status"]),
+                "Perlu Intervensi": "Ya" if x["status"] == "tiada_sebab" else "Tidak",
+                "Dikira Ponteng": "Ya" if x["kira_ponteng"] else "Tidak",
+                "Kategori": x["kategori"],
+                "Sub Alasan": x["sub_kategori"],
+                "Catatan": x["catatan"],
+                "Jenis Bukti": x["jenis_bukti"],
+                "Rujukan Bukti": x["rujukan_bukti"],
+                "Direkod Oleh": x["direkod_oleh"],
+                "Direkod Pada": x["direkod_pada"],
+                "Sumber": x["sumber"],
             })
         buf = io.StringIO()
-        pd.DataFrame(rows).to_csv(buf, index=False)
+        pd.DataFrame(out).to_csv(buf, index=False)
+        span = f"{params['date_from'] or 'awal'}_{params['date_to'] or 'terkini'}"
         return Response(
             buf.getvalue(),
             mimetype="text/csv",
             headers={"Content-Disposition":
-                     f'attachment; filename="Rumusan_Harian_{data["date"]}.csv"'},
+                     f'attachment; filename="Rekod_Sebab_{span}.csv"'},
         )
     except Exception as e:
         return Response(str(e), status=500)

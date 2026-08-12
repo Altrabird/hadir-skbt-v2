@@ -220,18 +220,16 @@ Nilai yang boleh diisi dalam lajur B:
 | `2 KRITIS` | guru kelas bagi satu kelas |
 | `2 KRITIS, 3 KREATIF` | lebih daripada satu kelas |
 | `SEMUA` | pentadbir — semua kelas, paras amaran, tetapan guru |
-| `2 KRITIS, BERTUGAS` | guru kelas biasa **dan** rumusan harian seluruh sekolah |
-| *(kosong)* | tiada akses kepada rekod ketidakhadiran |
+| *(kosong)* | tiada akses kepada rekod kelas, tetapi **masih boleh** buka Daftar Sebab |
 
-`BERTUGAS` memberi **rumusan harian sahaja** untuk seluruh sekolah. Ia tidak
-membenarkan guru membuka rekod kelas lain, menukar paras amaran, atau
-menetapkan guru kelas. Guna nilai ini untuk guru bertugas yang bergilir —
-jangan beri `SEMUA` semata-mata untuk tujuan itu.
+### Tab Daftar Sebab
 
-### Guru bertugas tidak nampak semua kelas dalam tab Harian
+Daftar Sebab memaparkan semua rekod ketidakhadiran dan sebab bagi **seluruh
+sekolah**, dan terbuka kepada mana-mana guru yang log masuk — tiada tetapan
+diperlukan. Guru bertugas yang bergilir tidak perlu didaftarkan.
 
-Pastikan kotak **Guru Bertugas** ditanda dalam **Tetapan → Guru Kelas**,
-atau lajur B mengandungi `BERTUGAS`.
+Kawalan kelas kekal pada tab **Rekod**, **Surat Amaran** dan **Tetapan**:
+di situ guru hanya nampak kelas yang ditetapkan kepadanya.
 
 ### Pautan borang kata "tidak sah atau telah tamat tempoh"
 

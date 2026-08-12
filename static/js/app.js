@@ -484,6 +484,10 @@ async function loadSidebarData() {
         });
         classFilter.innerHTML = classOpts;
         classSelect.innerHTML = classOpts;
+        document.getElementById("daftar-class").innerHTML =
+            '<option value="">Semua Kelas</option>' +
+            sidebarStudentsList.map(c =>
+                `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join("");
         // The Rekod tab's selects are populated by applySebabAuth(), scoped to
         // the classes the logged-in teacher is assigned to.
     } catch { /* toast shown */ }
@@ -1228,7 +1232,7 @@ async function sebabLogout() {
     try { await fetch("/api/settings/logout", { method: "POST" }); } catch { /* ignore */ }
     _amaranData = null;
     _sebabData = null;
-    _harianData = null;
+    _daftarData = null;
     applySebabAuth({});
 }
 
@@ -1520,7 +1524,7 @@ let _amaranData = null;
 let _amaranTetapan = null;
 
 function switchSebabView(view) {
-    ["rekod", "amaran", "harian"].forEach(v => {
+    ["rekod", "amaran", "daftar"].forEach(v => {
         document.getElementById(`sebab-view-${v}`).classList.toggle("hidden", v !== view);
         document.getElementById(`sebab-view-btn-${v}`).classList.toggle("active", v === view);
     });
@@ -1528,102 +1532,109 @@ function switchSebabView(view) {
         if (!_amaranTetapan) loadAmaranTetapan();
         if (!_amaranData) loadAmaran();
     }
-    if (view === "harian" && !_harianData) loadHarian();
+    if (view === "daftar" && !_daftarData) setDaftarTempoh(30);
 }
 
-// --- Rumusan Harian (guru bertugas) --------------------------------------
-let _harianData = null;
+// --- Daftar Sebab: every absence + reason, school-wide -------------------
+let _daftarData = null;
+let _daftarStatus = "";
 
-async function loadHarian() {
-    const container = document.getElementById("harian-content");
-    const date = document.getElementById("harian-date").value;
+function _iso(d) { return d.toISOString().slice(0, 10); }
+
+function setDaftarTempoh(days) {
+    const from = document.getElementById("daftar-from");
+    const to = document.getElementById("daftar-to");
+    if (!days) {                        // "Semua" — no bounds
+        from.value = "";
+        to.value = "";
+    } else {
+        const now = new Date();
+        to.value = _iso(now);
+        from.value = _iso(new Date(now.getTime() - (days - 1) * 86400000));
+    }
+    loadDaftar();
+}
+
+function setDaftarStatus(status) {
+    _daftarStatus = status;
+    ["", "tiada_sebab", "belum_disahkan", "tidak_sah", "sah"].forEach(s => {
+        const el = document.getElementById(`daftar-status-${s}`);
+        if (el) el.classList.toggle("active", s === status);
+    });
+    loadDaftar();
+}
+
+function _daftarParams() {
+    const p = new URLSearchParams();
+    const f = document.getElementById("daftar-from").value;
+    const t = document.getElementById("daftar-to").value;
+    const c = document.getElementById("daftar-class").value;
+    if (f) p.set("from", f);
+    if (t) p.set("to", t);
+    if (c) p.set("class", c);
+    if (_daftarStatus) p.set("status", _daftarStatus);
+    return p.toString();
+}
+
+async function loadDaftar() {
+    const container = document.getElementById("daftar-content");
     container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto"></div></div>`;
     try {
-        const qs = date ? `?date=${encodeURIComponent(date)}` : "";
-        const res = await apiFetch(`/api/rumusan/harian${qs}`);
-        _harianData = await res.json();
-        if (_harianData.error) {
-            container.innerHTML = sebabEmptyState(escapeHtml(_harianData.error), "fa-triangle-exclamation");
+        const qs = _daftarParams();
+        const res = await apiFetch(`/api/rekod-sebab${qs ? "?" + qs : ""}`);
+        _daftarData = await res.json();
+        if (_daftarData.error) {
+            container.innerHTML = sebabEmptyState(escapeHtml(_daftarData.error), "fa-triangle-exclamation");
             return;
         }
-        // Server may walk back to the last school day
-        document.getElementById("harian-date").value = _harianData.date;
-        document.getElementById("harian-skop").textContent = `Skop: ${_harianData.skop}`;
-        renderHarian();
+        renderDaftar();
     } catch {
-        container.innerHTML = sebabEmptyState("Gagal memuatkan rumusan.", "fa-triangle-exclamation");
+        container.innerHTML = sebabEmptyState("Gagal memuatkan daftar.", "fa-triangle-exclamation");
     }
 }
 
-function renderHarian() {
-    const d = _harianData;
-    const container = document.getElementById("harian-content");
+function renderDaftar() {
+    const d = _daftarData;
+    const container = document.getElementById("daftar-content");
     if (!d) return;
 
-    if (!d.total_absent) {
+    if (!d.rows.length) {
         container.innerHTML = sebabEmptyState(
-            `Tiada ketidakhadiran pada ${escapeHtml(d.date_label)}.`, "fa-face-smile");
+            d.total_absences ? "Tiada rekod dalam tapisan ini." : "Tiada ketidakhadiran dalam tempoh ini.",
+            d.total_absences ? "fa-filter" : "fa-face-smile");
         return;
     }
 
-    const GROUPS = [
-        ["tiada_sebab",    "Perlu Intervensi — Tiada Sebab", "red",     "fa-circle-exclamation"],
-        ["belum_disahkan", "Menunggu Pengesahan Guru Kelas", "amber",   "fa-clock"],
-        ["tidak_sah",      "Sebab Ditolak",                  "red",     "fa-circle-xmark"],
-        ["sah",            "Sebab Disahkan",                 "emerald", "fa-circle-check"],
-    ];
-
-    let bahagian = "";
-    GROUPS.forEach(([key, tajuk, warna, ikon]) => {
-        const list = d.pupils.filter(p => p.status === key);
-        if (!list.length) return;
-        const baris = list.map((p, i) => {
-            const butiran = [p.kategori, p.sub_kategori].filter(Boolean).join(" — ");
-            const waris = p.sumber === "Borang Waris";
-            return `
-                <div class="border border-gray-200 rounded-lg p-2">
-                    <div class="flex items-start gap-1.5">
-                        <span class="w-4 text-[9px] text-gray-400 text-right mt-0.5">${i + 1}</span>
-                        <div class="flex-1 min-w-0">
-                            <span class="text-[11px] font-bold text-gray-800 break-words">${escapeHtml(p.name)}</span>
-                            <div class="text-[9px] text-gray-500">${escapeHtml(p.class)} &bull; Sesi ${escapeHtml(p.session)}</div>
-                        </div>
-                        ${p.kira_ponteng ? `<span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-red-100 text-red-600">PONTENG</span>` : ""}
+    let hariSemasa = "";
+    const baris = d.rows.map(x => {
+        const meta = SEBAB_STATUS[x.status];
+        const tajuk = x.date_label !== hariSemasa
+            ? `<div class="text-[10px] font-bold text-gray-500 uppercase tracking-wider mt-3 mb-1">${escapeHtml(x.date_label)}</div>`
+            : "";
+        hariSemasa = x.date_label;
+        const butiran = [x.kategori, x.sub_kategori].filter(Boolean).join(" — ");
+        return `${tajuk}
+            <div class="border border-gray-200 rounded-lg p-2">
+                <div class="flex items-start gap-1.5">
+                    <div class="flex-1 min-w-0">
+                        <span class="text-[11px] font-bold text-gray-800 break-words">${escapeHtml(x.name)}</span>
+                        <div class="text-[9px] text-gray-500">${escapeHtml(x.class)} &bull; Sesi ${escapeHtml(x.session)}</div>
                     </div>
-                    ${butiran ? `<div class="mt-1 text-[10px] text-gray-700"><i class="fa-solid fa-notes-medical text-gray-400 mr-1"></i>${escapeHtml(butiran)}</div>` : ""}
-                    ${p.catatan ? `<div class="text-[10px] text-gray-500 mt-0.5">${escapeHtml(p.catatan)}</div>` : ""}
-                    ${p.jenis_bukti ? `<div class="text-[10px] text-gray-500 mt-0.5"><i class="fa-solid fa-paperclip text-gray-400 mr-1"></i>${escapeHtml(p.jenis_bukti)}</div>` : ""}
-                    ${p.direkod_oleh ? `<div class="text-[9px] text-gray-400 mt-0.5">${escapeHtml(p.direkod_oleh)}${waris ? ` <span class="px-1 rounded bg-sky-100 text-sky-700 font-bold">WARIS</span>` : ""}</div>` : ""}
-                </div>`;
-        }).join("");
-        bahagian += `
-            <div>
-                <div class="flex items-center gap-1.5 mb-1.5 mt-3">
-                    <i class="fa-solid ${ikon} text-${warna}-500 text-[11px]"></i>
-                    <span class="text-[10px] font-bold text-${warna}-600 uppercase tracking-wider">${tajuk}</span>
-                    <span class="ml-auto px-1.5 py-0.5 rounded text-[9px] font-black bg-${warna}-100 text-${warna}-700">${list.length}</span>
+                    <span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold bg-${meta.color}-100 text-${meta.color}-700">${meta.label}</span>
                 </div>
-                <div class="harian-list space-y-1.5">${baris}</div>
+                ${butiran ? `<div class="mt-1 text-[10px] text-gray-700"><i class="fa-solid fa-notes-medical text-gray-400 mr-1"></i>${escapeHtml(butiran)}</div>` : ""}
+                ${x.catatan ? `<div class="text-[10px] text-gray-500 mt-0.5">${escapeHtml(x.catatan)}</div>` : ""}
+                ${x.jenis_bukti ? `<div class="text-[10px] text-gray-500 mt-0.5"><i class="fa-solid fa-paperclip text-gray-400 mr-1"></i>${escapeHtml(x.jenis_bukti)}${x.rujukan_bukti ? " — " + escapeHtml(x.rujukan_bukti) : ""}</div>` : ""}
+                <div class="flex items-center gap-1 mt-0.5">
+                    ${x.direkod_oleh ? `<span class="text-[9px] text-gray-400">${escapeHtml(x.direkod_oleh)}</span>` : ""}
+                    ${x.sumber === "Borang Waris" ? `<span class="px-1 rounded bg-sky-100 text-sky-700 text-[8px] font-bold">WARIS</span>` : ""}
+                    ${x.kira_ponteng ? `<span class="ml-auto px-1 rounded bg-red-100 text-red-600 text-[8px] font-black">PONTENG</span>` : ""}
+                </div>
             </div>`;
-    });
+    }).join("");
 
     container.innerHTML = `
-        <div class="bg-gradient-to-r from-indigo-500 to-blue-600 rounded-xl p-3 text-white">
-            <div class="text-xs font-bold"><i class="fa-solid fa-clipboard-check mr-1.5"></i>${escapeHtml(d.date_label)}</div>
-            <div class="text-[10px] text-indigo-200 mt-0.5">${d.total_absent} murid tidak hadir</div>
-        </div>
-
-        ${d.perlu_intervensi > 0 ? `
-        <div class="flex items-start gap-2 px-2.5 py-2 bg-red-50 border border-red-200 rounded-lg text-[10px] text-red-700 font-medium mt-2">
-            <i class="fa-solid fa-user-clock text-red-500 mt-0.5 shrink-0"></i>
-            <span><strong>${d.perlu_intervensi} murid</strong> tiada sebab langsung &mdash; senarai untuk sesi intervensi.</span>
-        </div>` : `
-        <div class="flex items-start gap-2 px-2.5 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-[10px] text-emerald-700 font-medium mt-2">
-            <i class="fa-solid fa-circle-check text-emerald-500 mt-0.5 shrink-0"></i>
-            <span>Semua ketidakhadiran sudah ada sebab. Tiada murid untuk sesi intervensi.</span>
-        </div>`}
-
-        <div class="grid grid-cols-4 gap-1.5 mt-2">
+        <div class="grid grid-cols-4 gap-1.5">
             <div class="bg-red-50 rounded-lg p-2 text-center">
                 <p class="text-base font-black text-red-600">${d.counts.tiada_sebab}</p>
                 <p class="text-[8px] font-bold text-red-500 leading-tight">Tiada<br>Sebab</p>
@@ -1641,12 +1652,16 @@ function renderHarian() {
                 <p class="text-[8px] font-bold text-emerald-500 leading-tight">Sebab<br>Sah</p>
             </div>
         </div>
-        ${bahagian}`;
+        <div class="text-[10px] text-gray-500 mt-2">
+            Memaparkan <strong>${d.shown}</strong> daripada ${d.total_absences} rekod
+            &bull; <strong>${d.daripada_waris}</strong> diisi oleh ibu bapa
+        </div>
+        <div class="daftar-list space-y-1.5">${baris}</div>`;
 }
 
-function downloadHarian() {
-    if (!_harianData) return;
-    window.location.href = `/api/export/rumusan/${_harianData.date}`;
+function downloadDaftar() {
+    const qs = _daftarParams();
+    window.location.href = `/api/export/rekod-sebab${qs ? "?" + qs : ""}`;
 }
 
 async function loadAmaranTetapan() {
@@ -1985,10 +2000,9 @@ async function loadGuruList() {
                 : (t.classes.length
                     ? escapeHtml(t.classes.join(", "))
                     : '<span class="text-amber-600">Belum ditetapkan</span>');
-            const duty = t.is_duty ? ' <span class="px-1 rounded bg-indigo-100 text-indigo-700 font-bold">BERTUGAS</span>' : "";
             return `<div class="flex items-start gap-2 px-2 py-1.5 text-[10px]">
                         <span class="font-semibold text-gray-700 flex-1 min-w-0 break-words">${escapeHtml(t.name)}</span>
-                        <span class="text-gray-500 text-right shrink-0 max-w-[55%] break-words">${label}${duty}</span>
+                        <span class="text-gray-500 text-right shrink-0 max-w-[55%] break-words">${label}</span>
                     </div>`;
         }).join("");
 }
@@ -2006,7 +2020,6 @@ function onGuruSelect() {
     if (!t) { wrapper.classList.add("hidden"); return; }
 
     document.getElementById("guru-is-admin").checked = t.is_admin;
-    document.getElementById("guru-is-duty").checked = !!t.is_duty;
     document.getElementById("guru-class-list").innerHTML =
         _guruData.all_classes.map(c => `
             <label class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-gray-50 cursor-pointer">
@@ -2039,8 +2052,7 @@ async function saveGuru() {
         const res = await fetch("/api/settings/guru", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ teacher, classes,
-                duty: document.getElementById("guru-is-duty").checked }),
+            body: JSON.stringify({ teacher, classes }),
         });
         const d = await res.json();
         if (!d.success) return fail(d.error || "Gagal menyimpan tetapan.");
