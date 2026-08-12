@@ -297,6 +297,11 @@ def invalidate_cache(sheet_name: str | None = None):
 #   "SEMUA"               -> school-wide access (Guru Besar / PK HEM)
 #   empty                 -> no access to absence records until assigned
 TEACHER_ROLE_ALL = "SEMUA"
+# Extra token usable alongside a class list, e.g. "2 KRITIS, BERTUGAS".
+# Grants a school-wide view of the DAILY summary only — not per-class reason
+# records, warning letters, or settings. Duty teachers rotate, so handing every
+# one of them SEMUA would undo the class scoping.
+TEACHER_ROLE_DUTY = "BERTUGAS"
 _TEACHER_CACHE_KEY = "__teachers__"
 
 
@@ -318,14 +323,16 @@ def get_teacher_directory() -> dict[str, dict]:
         if not name:
             continue
         assignment = (row[1] if len(row) > 1 else "").strip()
-        is_admin = assignment.upper() == TEACHER_ROLE_ALL
-        classes = [] if is_admin else [
-            c.strip() for c in assignment.split(",") if c.strip()
-        ]
+        parts = [c.strip() for c in assignment.split(",") if c.strip()]
+        is_duty = any(p.upper() == TEACHER_ROLE_DUTY for p in parts)
+        parts = [p for p in parts if p.upper() != TEACHER_ROLE_DUTY]
+        is_admin = any(p.upper() == TEACHER_ROLE_ALL for p in parts)
+        classes = [] if is_admin else parts
         directory[name.upper()] = {
             "name": name,
             "classes": classes,
             "is_admin": is_admin,
+            "is_duty": is_duty,
         }
 
     _sheet_cache[_TEACHER_CACHE_KEY] = (directory, now)
@@ -1036,6 +1043,7 @@ def api_settings_login():
         "teacher": info["name"],
         "classes": info["classes"],
         "is_admin": info["is_admin"],
+        "is_duty": info.get("is_duty", False),
         "can_manage_teachers": info["is_admin"] or not directory_has_admin(),
     })
 
@@ -1061,6 +1069,7 @@ def api_whoami():
         "teacher": info["name"],
         "classes": info["classes"],
         "is_admin": info["is_admin"],
+        "is_duty": info.get("is_duty", False),
         "can_manage_teachers": can_manage,
     })
 
@@ -1081,6 +1090,7 @@ def api_list_guru():
                     "name": t["name"],
                     "classes": t["classes"],
                     "is_admin": t["is_admin"],
+                    "is_duty": t.get("is_duty", False),
                 }
                 for t in sorted(directory.values(), key=lambda x: x["name"])
             ],
@@ -1140,6 +1150,10 @@ def api_set_guru():
                 if c not in chosen:
                     chosen.append(c)
             assignment = ", ".join(chosen)
+
+        # Duty-teacher flag rides alongside whatever the assignment is
+        if bool(payload.get("duty")):
+            assignment = f"{assignment}, {TEACHER_ROLE_DUTY}".lstrip(", ")
 
         # Locate the teacher's row in column A and write column B beside it
         client = get_spreadsheet_client()
@@ -2125,6 +2139,146 @@ def api_kelas_ketidakhadiran(class_name: str):
         return jsonify(build_ketidakhadiran(class_name, date_from, date_to))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def build_rumusan_harian(date_str: str, allowed: list[str] | None) -> dict:
+    """Every absence on one day, with the reason and whether it is verified.
+
+    Built for the duty teacher: the pupils with no reason at all come first,
+    because those are the ones an intervention session is for.
+    """
+    records = get_data_from_sheet(SHEET_ATTENDANCE)
+    sebab_index = build_sebab_index()
+
+    # Latest date with any marked attendance, on or before the one asked for
+    marked_dates = {
+        str(r.get("DATE", ""))[:10]
+        for r in records
+        if (allowed is None or str(r.get("CLASS", "")).strip() in allowed)
+    }
+    marked_dates.discard("")
+    if date_str not in marked_dates:
+        earlier = sorted(d for d in marked_dates if d <= date_str)
+        date_str = earlier[-1] if earlier else date_str
+
+    seen: set[tuple[str, str]] = set()
+    pupils = []
+    counts = {"tiada_sebab": 0, "belum_disahkan": 0, "sah": 0, "tidak_sah": 0}
+
+    for r in records:
+        if str(r.get("DATE", ""))[:10] != date_str:
+            continue
+        if str(r.get("STATUS", "")).strip() != STATUS_ABSENT:
+            continue
+        cls = str(r.get("CLASS", "")).strip()
+        if allowed is not None and cls not in allowed:
+            continue
+        name = str(r.get("NAME", "")).strip()
+        key = (cls, name.upper())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        entry = sebab_index.get((date_str, name.upper()))
+        status = resolve_sebab_status(entry)
+        counts[status] += 1
+        pupils.append({
+            "name": name,
+            "class": cls,
+            "session": get_session(cls),
+            "status": status,
+            "kira_ponteng": counts_as_ponteng(status, entry),
+            "kategori": entry["kategori"] if entry else "",
+            "sub_kategori": entry["sub_kategori"] if entry else "",
+            "catatan": entry["catatan"] if entry else "",
+            "jenis_bukti": entry["jenis_bukti"] if entry else "",
+            "rujukan_bukti": entry["rujukan_bukti"] if entry else "",
+            "direkod_oleh": entry["direkod_oleh"] if entry else "",
+            "sumber": entry["sumber"] if entry else "",
+        })
+
+    # No reason first — that is the intervention list — then awaiting proof
+    order = {"tiada_sebab": 0, "belum_disahkan": 1, "tidak_sah": 2, "sah": 3}
+    pupils.sort(key=lambda p: (order.get(p["status"], 9), p["class"], p["name"]))
+
+    return {
+        "date": date_str,
+        "date_label": format_malay_date(date_str),
+        "total_absent": len(pupils),
+        "counts": counts,
+        "perlu_intervensi": counts["tiada_sebab"],
+        "pupils": pupils,
+    }
+
+
+@app.route("/api/rumusan/harian")
+def api_rumusan_harian():
+    """Daily absence summary with reasons. ?date=YYYY-MM-DD (default: the last
+    school day before today)."""
+    info, err = require_teacher()
+    if err:
+        return err
+    try:
+        date_str = str(request.args.get("date", "")).strip()
+        if date_str and not _valid_date(date_str):
+            return jsonify({"error": "Tarikh tidak sah (guna YYYY-MM-DD)"}), 400
+        if not date_str:
+            # "Semalam" — build_rumusan_harian walks back to the last marked day
+            date_str = (datetime.datetime.now(tz=TIMEZONE)
+                        - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # A duty teacher sees the whole school for this view only
+        allowed = None if (info["is_admin"] or info.get("is_duty")) else list(info["classes"])
+        data = build_rumusan_harian(date_str, allowed)
+        data["skop"] = "Seluruh Sekolah" if allowed is None else ", ".join(allowed)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/export/rumusan/<date_str>")
+def api_export_rumusan(date_str: str):
+    """CSV of the daily summary — the intervention list first."""
+    info, err = require_teacher()
+    if err:
+        return Response("Sila log masuk.", status=401)
+    if not _valid_date(date_str):
+        return Response("Tarikh tidak sah", status=400)
+    try:
+        allowed = None if (info["is_admin"] or info.get("is_duty")) else list(info["classes"])
+        data = build_rumusan_harian(date_str, allowed)
+        if not data["pupils"]:
+            return Response("Tiada ketidakhadiran bagi tarikh ini", status=404)
+
+        label = {"tiada_sebab": "Tiada Sebab", "belum_disahkan": SAH_BELUM,
+                 "sah": SAH_YA, "tidak_sah": SAH_TIDAK}
+        rows = []
+        for i, p in enumerate(data["pupils"], 1):
+            rows.append({
+                "Bil": i,
+                "Nama": p["name"],
+                "Kelas": p["class"],
+                "Sesi": p["session"],
+                "Status Sebab": label.get(p["status"], p["status"]),
+                "Perlu Intervensi": "Ya" if p["status"] == "tiada_sebab" else "Tidak",
+                "Kategori": p["kategori"],
+                "Sub Alasan": p["sub_kategori"],
+                "Catatan": p["catatan"],
+                "Jenis Bukti": p["jenis_bukti"],
+                "Rujukan Bukti": p["rujukan_bukti"],
+                "Direkod Oleh": p["direkod_oleh"],
+                "Sumber": p["sumber"],
+            })
+        buf = io.StringIO()
+        pd.DataFrame(rows).to_csv(buf, index=False)
+        return Response(
+            buf.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition":
+                     f'attachment; filename="Rumusan_Harian_{data["date"]}.csv"'},
+        )
+    except Exception as e:
+        return Response(str(e), status=500)
 
 
 @app.route("/api/kelas/senarai-saya")

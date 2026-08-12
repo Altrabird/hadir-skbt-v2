@@ -1228,6 +1228,7 @@ async function sebabLogout() {
     try { await fetch("/api/settings/logout", { method: "POST" }); } catch { /* ignore */ }
     _amaranData = null;
     _sebabData = null;
+    _harianData = null;
     applySebabAuth({});
 }
 
@@ -1519,7 +1520,7 @@ let _amaranData = null;
 let _amaranTetapan = null;
 
 function switchSebabView(view) {
-    ["rekod", "amaran"].forEach(v => {
+    ["rekod", "amaran", "harian"].forEach(v => {
         document.getElementById(`sebab-view-${v}`).classList.toggle("hidden", v !== view);
         document.getElementById(`sebab-view-btn-${v}`).classList.toggle("active", v === view);
     });
@@ -1527,6 +1528,125 @@ function switchSebabView(view) {
         if (!_amaranTetapan) loadAmaranTetapan();
         if (!_amaranData) loadAmaran();
     }
+    if (view === "harian" && !_harianData) loadHarian();
+}
+
+// --- Rumusan Harian (guru bertugas) --------------------------------------
+let _harianData = null;
+
+async function loadHarian() {
+    const container = document.getElementById("harian-content");
+    const date = document.getElementById("harian-date").value;
+    container.innerHTML = `<div class="text-center py-6"><div class="w-6 h-6 border-2 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto"></div></div>`;
+    try {
+        const qs = date ? `?date=${encodeURIComponent(date)}` : "";
+        const res = await apiFetch(`/api/rumusan/harian${qs}`);
+        _harianData = await res.json();
+        if (_harianData.error) {
+            container.innerHTML = sebabEmptyState(escapeHtml(_harianData.error), "fa-triangle-exclamation");
+            return;
+        }
+        // Server may walk back to the last school day
+        document.getElementById("harian-date").value = _harianData.date;
+        document.getElementById("harian-skop").textContent = `Skop: ${_harianData.skop}`;
+        renderHarian();
+    } catch {
+        container.innerHTML = sebabEmptyState("Gagal memuatkan rumusan.", "fa-triangle-exclamation");
+    }
+}
+
+function renderHarian() {
+    const d = _harianData;
+    const container = document.getElementById("harian-content");
+    if (!d) return;
+
+    if (!d.total_absent) {
+        container.innerHTML = sebabEmptyState(
+            `Tiada ketidakhadiran pada ${escapeHtml(d.date_label)}.`, "fa-face-smile");
+        return;
+    }
+
+    const GROUPS = [
+        ["tiada_sebab",    "Perlu Intervensi — Tiada Sebab", "red",     "fa-circle-exclamation"],
+        ["belum_disahkan", "Menunggu Pengesahan Guru Kelas", "amber",   "fa-clock"],
+        ["tidak_sah",      "Sebab Ditolak",                  "red",     "fa-circle-xmark"],
+        ["sah",            "Sebab Disahkan",                 "emerald", "fa-circle-check"],
+    ];
+
+    let bahagian = "";
+    GROUPS.forEach(([key, tajuk, warna, ikon]) => {
+        const list = d.pupils.filter(p => p.status === key);
+        if (!list.length) return;
+        const baris = list.map((p, i) => {
+            const butiran = [p.kategori, p.sub_kategori].filter(Boolean).join(" — ");
+            const waris = p.sumber === "Borang Waris";
+            return `
+                <div class="border border-gray-200 rounded-lg p-2">
+                    <div class="flex items-start gap-1.5">
+                        <span class="w-4 text-[9px] text-gray-400 text-right mt-0.5">${i + 1}</span>
+                        <div class="flex-1 min-w-0">
+                            <span class="text-[11px] font-bold text-gray-800 break-words">${escapeHtml(p.name)}</span>
+                            <div class="text-[9px] text-gray-500">${escapeHtml(p.class)} &bull; Sesi ${escapeHtml(p.session)}</div>
+                        </div>
+                        ${p.kira_ponteng ? `<span class="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-black bg-red-100 text-red-600">PONTENG</span>` : ""}
+                    </div>
+                    ${butiran ? `<div class="mt-1 text-[10px] text-gray-700"><i class="fa-solid fa-notes-medical text-gray-400 mr-1"></i>${escapeHtml(butiran)}</div>` : ""}
+                    ${p.catatan ? `<div class="text-[10px] text-gray-500 mt-0.5">${escapeHtml(p.catatan)}</div>` : ""}
+                    ${p.jenis_bukti ? `<div class="text-[10px] text-gray-500 mt-0.5"><i class="fa-solid fa-paperclip text-gray-400 mr-1"></i>${escapeHtml(p.jenis_bukti)}</div>` : ""}
+                    ${p.direkod_oleh ? `<div class="text-[9px] text-gray-400 mt-0.5">${escapeHtml(p.direkod_oleh)}${waris ? ` <span class="px-1 rounded bg-sky-100 text-sky-700 font-bold">WARIS</span>` : ""}</div>` : ""}
+                </div>`;
+        }).join("");
+        bahagian += `
+            <div>
+                <div class="flex items-center gap-1.5 mb-1.5 mt-3">
+                    <i class="fa-solid ${ikon} text-${warna}-500 text-[11px]"></i>
+                    <span class="text-[10px] font-bold text-${warna}-600 uppercase tracking-wider">${tajuk}</span>
+                    <span class="ml-auto px-1.5 py-0.5 rounded text-[9px] font-black bg-${warna}-100 text-${warna}-700">${list.length}</span>
+                </div>
+                <div class="harian-list space-y-1.5">${baris}</div>
+            </div>`;
+    });
+
+    container.innerHTML = `
+        <div class="bg-gradient-to-r from-indigo-500 to-blue-600 rounded-xl p-3 text-white">
+            <div class="text-xs font-bold"><i class="fa-solid fa-clipboard-check mr-1.5"></i>${escapeHtml(d.date_label)}</div>
+            <div class="text-[10px] text-indigo-200 mt-0.5">${d.total_absent} murid tidak hadir</div>
+        </div>
+
+        ${d.perlu_intervensi > 0 ? `
+        <div class="flex items-start gap-2 px-2.5 py-2 bg-red-50 border border-red-200 rounded-lg text-[10px] text-red-700 font-medium mt-2">
+            <i class="fa-solid fa-user-clock text-red-500 mt-0.5 shrink-0"></i>
+            <span><strong>${d.perlu_intervensi} murid</strong> tiada sebab langsung &mdash; senarai untuk sesi intervensi.</span>
+        </div>` : `
+        <div class="flex items-start gap-2 px-2.5 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-[10px] text-emerald-700 font-medium mt-2">
+            <i class="fa-solid fa-circle-check text-emerald-500 mt-0.5 shrink-0"></i>
+            <span>Semua ketidakhadiran sudah ada sebab. Tiada murid untuk sesi intervensi.</span>
+        </div>`}
+
+        <div class="grid grid-cols-4 gap-1.5 mt-2">
+            <div class="bg-red-50 rounded-lg p-2 text-center">
+                <p class="text-base font-black text-red-600">${d.counts.tiada_sebab}</p>
+                <p class="text-[8px] font-bold text-red-500 leading-tight">Tiada<br>Sebab</p>
+            </div>
+            <div class="bg-amber-50 rounded-lg p-2 text-center">
+                <p class="text-base font-black text-amber-600">${d.counts.belum_disahkan}</p>
+                <p class="text-[8px] font-bold text-amber-500 leading-tight">Belum<br>Disahkan</p>
+            </div>
+            <div class="bg-red-50 rounded-lg p-2 text-center">
+                <p class="text-base font-black text-red-600">${d.counts.tidak_sah}</p>
+                <p class="text-[8px] font-bold text-red-500 leading-tight">Tidak<br>Sah</p>
+            </div>
+            <div class="bg-emerald-50 rounded-lg p-2 text-center">
+                <p class="text-base font-black text-emerald-600">${d.counts.sah}</p>
+                <p class="text-[8px] font-bold text-emerald-500 leading-tight">Sebab<br>Sah</p>
+            </div>
+        </div>
+        ${bahagian}`;
+}
+
+function downloadHarian() {
+    if (!_harianData) return;
+    window.location.href = `/api/export/rumusan/${_harianData.date}`;
 }
 
 async function loadAmaranTetapan() {
@@ -1865,9 +1985,10 @@ async function loadGuruList() {
                 : (t.classes.length
                     ? escapeHtml(t.classes.join(", "))
                     : '<span class="text-amber-600">Belum ditetapkan</span>');
+            const duty = t.is_duty ? ' <span class="px-1 rounded bg-indigo-100 text-indigo-700 font-bold">BERTUGAS</span>' : "";
             return `<div class="flex items-start gap-2 px-2 py-1.5 text-[10px]">
                         <span class="font-semibold text-gray-700 flex-1 min-w-0 break-words">${escapeHtml(t.name)}</span>
-                        <span class="text-gray-500 text-right shrink-0 max-w-[55%] break-words">${label}</span>
+                        <span class="text-gray-500 text-right shrink-0 max-w-[55%] break-words">${label}${duty}</span>
                     </div>`;
         }).join("");
 }
@@ -1885,6 +2006,7 @@ function onGuruSelect() {
     if (!t) { wrapper.classList.add("hidden"); return; }
 
     document.getElementById("guru-is-admin").checked = t.is_admin;
+    document.getElementById("guru-is-duty").checked = !!t.is_duty;
     document.getElementById("guru-class-list").innerHTML =
         _guruData.all_classes.map(c => `
             <label class="flex items-center gap-1.5 px-1.5 py-1 rounded hover:bg-gray-50 cursor-pointer">
@@ -1917,7 +2039,8 @@ async function saveGuru() {
         const res = await fetch("/api/settings/guru", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ teacher, classes }),
+            body: JSON.stringify({ teacher, classes,
+                duty: document.getElementById("guru-is-duty").checked }),
         });
         const d = await res.json();
         if (!d.success) return fail(d.error || "Gagal menyimpan tetapan.");

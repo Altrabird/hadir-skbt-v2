@@ -212,7 +212,26 @@ nginx -t && systemctl reload nginx
 
 Lajur B tab `REKOD LOG TETAPAN` masih kosong untuk guru itu.
 Buka **Tetapan → Guru Kelas** dalam sistem dan tetapkan kelasnya.
-Isi `SEMUA` untuk Guru Besar / PK HEM.
+
+Nilai yang boleh diisi dalam lajur B:
+
+| Nilai | Kesan |
+|---|---|
+| `2 KRITIS` | guru kelas bagi satu kelas |
+| `2 KRITIS, 3 KREATIF` | lebih daripada satu kelas |
+| `SEMUA` | pentadbir — semua kelas, paras amaran, tetapan guru |
+| `2 KRITIS, BERTUGAS` | guru kelas biasa **dan** rumusan harian seluruh sekolah |
+| *(kosong)* | tiada akses kepada rekod ketidakhadiran |
+
+`BERTUGAS` memberi **rumusan harian sahaja** untuk seluruh sekolah. Ia tidak
+membenarkan guru membuka rekod kelas lain, menukar paras amaran, atau
+menetapkan guru kelas. Guna nilai ini untuk guru bertugas yang bergilir —
+jangan beri `SEMUA` semata-mata untuk tujuan itu.
+
+### Guru bertugas tidak nampak semua kelas dalam tab Harian
+
+Pastikan kotak **Guru Bertugas** ditanda dalam **Tetapan → Guru Kelas**,
+atau lajur B mengandungi `BERTUGAS`.
 
 ### Pautan borang kata "tidak sah atau telah tamat tempoh"
 

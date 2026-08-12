@@ -264,6 +264,7 @@ table tbody tr:hover { background: #f8fafc; }
 
 /* Flow the cards into columns instead of one tall stack */
 .sidebar-full .sebab-pupil-list,
+.sidebar-full .harian-list,
 .sidebar-full .amaran-list {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
@@ -273,6 +274,7 @@ table tbody tr:hover { background: #f8fafc; }
 
 /* space-y-* adds margin-top to siblings, which misaligns grid rows */
 .sidebar-full .sebab-pupil-list > * + *,
+.sidebar-full .harian-list > * + *,
 .sidebar-full .amaran-list > * + * { margin-top: 0; }
 
 /* Keep the controls readable rather than stretched across a wide screen */
