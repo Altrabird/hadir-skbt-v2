@@ -1524,12 +1524,26 @@ def api_submit_attendance():
                     if row_date == target_date and row_class == target_class:
                         rows_to_delete.append(i)
 
-            # 3. Delete old rows in reverse order (bottom-up to preserve indices)
-            for row_idx in reversed(rows_to_delete):
-                attendance_sheet.delete_rows(row_idx)
-
-            # 4. Append new rows at the end
-            attendance_sheet.append_rows(new_rows, value_input_option="RAW")
+            # 3+4. Delete old rows (bottom-up) and append new ones in ONE batchUpdate.
+            # It is atomic: a quota/network error can no longer leave the class
+            # half-deleted (12/10 4 INTELEK lost its last 9 pupils that way).
+            sheet_id = attendance_sheet.id
+            requests = [
+                {"deleteDimension": {"range": {
+                    "sheetId": sheet_id, "dimension": "ROWS",
+                    "startIndex": row_idx - 1, "endIndex": row_idx,
+                }}}
+                for row_idx in reversed(rows_to_delete)
+            ]
+            requests.append({"appendCells": {
+                "sheetId": sheet_id,
+                "fields": "userEnteredValue",
+                "rows": [
+                    {"values": [{"userEnteredValue": {"stringValue": str(v)}} for v in r]}
+                    for r in new_rows
+                ],
+            }})
+            spreadsheet.batch_update({"requests": requests})
 
         invalidate_cache(SHEET_ATTENDANCE)
 
