@@ -932,11 +932,12 @@ def init_telegram():
 
 
 # ---------------------------------------------------------------------------
-# Initialize Telegram on first request (avoids issues with Gunicorn workers)
+# Initialize Telegram when the worker boots. Waiting for the first request
+# missed jobs: on 22/10 an apt restart at 06:21 left no traffic until 06:30:43,
+# so the 06:30 reminder never fired. The file lock keeps it to one worker
+# (gunicorn runs without --preload, so each worker imports this module itself).
 # ---------------------------------------------------------------------------
-@app.before_request
-def before_first_request():
-    init_telegram()
+init_telegram()
 
 
 # ---------------------------------------------------------------------------
